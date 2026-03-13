@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OD Draw Local Editor</title>
+    <link rel="stylesheet" href="/frontend/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">OD Select Drawing Engine</p>
+          <h1>Local Editor</h1>
+          <p id="backend-badge" class="backend-badge">Backend: loading</p>
+        </div>
+        <div class="header-actions">
+          <button id="refresh-projects">Refresh Projects</button>
+          <button id="generate-btn" class="accent">Generate Drawing Set</button>
+        </div>
+      </header>
+
+      <main class="layout">
+        <section class="panel stack">
+          <div class="section-head">
+            <h2>Project</h2>
+            <select id="project-select"></select>
+          </div>
+
+          <form id="project-form" class="stack dense">
+            <label>Address<input name="address" /></label>
+            <div class="grid two">
+              <label>KCD Color<input name="kcd_color" /></label>
+              <label>KCD Style<input name="kcd_style" /></label>
+            </div>
+            <div class="grid two">
+              <label>Drawer Type<input name="drawer_type" /></label>
+              <label>Uppers Height<input name="uppers_height" type="number" /></label>
+            </div>
+            <div class="grid two">
+              <label>Crown Molding<input name="crown_molding" /></label>
+              <label>Designer<input name="designer" /></label>
+            </div>
+            <div class="button-row">
+              <button type="submit">Save Metadata</button>
+              <button type="button" id="new-sample-btn">New From Sample</button>
+              <button type="button" id="new-blank-btn">New Blank</button>
+            </div>
+          </form>
+
+          <div class="section-head">
+            <h2>Room</h2>
+            <select id="room-select"></select>
+          </div>
+
+          <div class="stack dense">
+            <label>Label<input id="room-label" /></label>
+            <div class="grid two">
+              <label>Room Type<input id="room-type" /></label>
+              <label>Ceiling Height<input id="room-ceiling" type="number" step="0.25" /></label>
+            </div>
+          </div>
+
+          <div>
+            <div class="subhead">
+              <h3>Walls</h3>
+              <button id="save-room-btn">Save Room Geometry</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Start X</th>
+                  <th>Start Y</th>
+                  <th>End X</th>
+                  <th>End Y</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody id="walls-body"></tbody>
+            </table>
+          </div>
+
+          <div>
+            <div class="subhead">
+              <h3>Openings</h3>
+              <button id="add-opening-btn">Add Opening</button>
+            </div>
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Wall</th>
+                  <th>Kind</th>
+                  <th>Offset</th>
+                  <th>Width</th>
+                  <th>VIF</th>
+                </tr>
+              </thead>
+              <tbody id="openings-body"></tbody>
+            </table>
+          </div>
+
+          <div>
+            <div class="subhead">
+              <h3>Cabinets</h3>
+              <button id="delete-cabinet-btn">Delete Selected</button>
+            </div>
+            <select id="cabinet-list" size="7"></select>
+            <div class="grid two">
+              <label>Code<select id="cabinet-code"></select></label>
+              <label>Wall<select id="cabinet-wall"></select></label>
+            </div>
+            <div class="grid two">
+              <label>Offset<input id="cabinet-offset" type="number" step="0.25" /></label>
+              <label>Upper<input id="cabinet-upper" type="checkbox" /></label>
+            </div>
+            <div class="button-row">
+              <button id="add-cabinet-btn">Add Cabinet</button>
+              <button id="update-cabinet-btn">Update Cabinet</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel preview-panel">
+          <div class="section-head">
+            <h2>Preview</h2>
+            <div class="button-row">
+              <select id="sheet-select"></select>
+              <a id="pdf-link" target="_blank" rel="noreferrer">PDF</a>
+              <a id="tsv-link" target="_blank" rel="noreferrer">TSV</a>
+            </div>
+          </div>
+          <div id="status" class="status">Loading…</div>
+          <iframe id="preview-frame" title="Sheet preview"></iframe>
+        </section>
+      </main>
+    </div>
+
+    <script src="/frontend/app.js" defer></script>
+  </body>
+</html>
