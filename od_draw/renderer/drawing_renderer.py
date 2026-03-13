@@ -68,6 +68,40 @@ def _wrap_text(value: str, max_chars: int) -> list[str]:
     return lines
 
 
+def _jpeg_dimensions(data: bytes) -> tuple[int, int]:
+    offset = 2
+    while offset < len(data):
+        while offset < len(data) and data[offset] != 0xFF:
+            offset += 1
+        while offset < len(data) and data[offset] == 0xFF:
+            offset += 1
+        if offset >= len(data):
+            break
+        marker = data[offset]
+        offset += 1
+        if marker in {0xD8, 0xD9}:
+            continue
+        if offset + 1 >= len(data):
+            break
+        length = int.from_bytes(data[offset : offset + 2], "big")
+        if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+            height = int.from_bytes(data[offset + 3 : offset + 5], "big")
+            width = int.from_bytes(data[offset + 5 : offset + 7], "big")
+            return width, height
+        offset += length
+    raise ValueError("Unable to determine JPEG dimensions")
+
+
+TEMPLATE_PAGE_INDEX = {
+    "CP-00": 0,
+    "A-01": 1,
+    "A-02": 2,
+    "A-03": 3,
+    "A-04": 4,
+    "D-01": 5,
+}
+
+
 class DrawingRenderer:
     def __init__(self) -> None:
         self.document = PdfDocument()
@@ -81,6 +115,19 @@ class DrawingRenderer:
         self.light = _hex_to_rgb(COLOR_LIGHT)
         self.mid = _hex_to_rgb(COLOR_MID)
         self.bg = _hex_to_rgb(COLOR_BG)
+        self.templates = self._load_templates()
+
+    def _load_templates(self) -> dict[str, tuple[bytes, int, int]]:
+        template_dir = Path(__file__).resolve().parents[1] / "templates"
+        templates: dict[str, tuple[bytes, int, int]] = {}
+        for sheet_number, page_index in TEMPLATE_PAGE_INDEX.items():
+            path = template_dir / f"opendoor-page-{page_index}.jpg"
+            if not path.exists():
+                continue
+            data = path.read_bytes()
+            width, height = _jpeg_dimensions(data)
+            templates[sheet_number] = (data, width, height)
+        return templates
 
     def render_project(self, project: Project, output_dir: Path) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,6 +142,8 @@ class DrawingRenderer:
         return pdf_path
 
     def _render_sheet(self, page: PdfPage, project: Project, sheet: Sheet) -> None:
+        if self._render_template_sheet(page, project, sheet):
+            return
         self._draw_page_frame(page, project, sheet)
         if sheet.mode == SheetMode.COVER:
             self._render_cover_sheet(page, project, sheet)
@@ -103,6 +152,46 @@ class DrawingRenderer:
             self._render_detail_sheet(page, project, sheet)
             return
         self._render_plan_sheet(page, project, sheet)
+
+    def _render_template_sheet(self, page: PdfPage, project: Project, sheet: Sheet) -> bool:
+        template = self.templates.get(sheet.sheet_number)
+        if template is None:
+            return False
+        data, pixel_width, pixel_height = template
+        page.jpeg(0, 0, SHEET_WIDTH, SHEET_HEIGHT, data, pixel_width, pixel_height)
+        self._clear_bottom_strip_fields(page)
+        self._draw_bottom_strip_text(page, project, sheet, include_logo=False)
+        if sheet.mode in {SheetMode.COVER, SheetMode.DETAILS}:
+            return True
+        for rect in self._template_blank_rects(sheet):
+            self._clear_rect(page, rect)
+        self._render_plan_sheet(page, project, sheet)
+        return True
+
+    def _clear_rect(self, page: PdfPage, rect: Rect) -> None:
+        page.rect(rect.x, rect.y, rect.width, rect.height, stroke_width=0.1, stroke_rgb=self.bg, fill_rgb=self.bg)
+
+    def _clear_bottom_strip_fields(self, page: PdfPage) -> None:
+        x = SHEET_MARGIN + 82
+        y = SHEET_MARGIN + 1.5
+        height = max(BOTTOM_STRIP_HEIGHT - 3, 1)
+        for width in [68, 74, 148, 242, 84, 430, 60]:
+            self._clear_rect(page, Rect(x + 1.5, y, width - 3, height))
+            x += width
+
+    def _template_blank_rects(self, sheet: Sheet) -> list[Rect]:
+        if sheet.sheet_number == "A-01":
+            return [Rect(24, 74, 998, 610)]
+        if sheet.sheet_number == "A-02":
+            return [Rect(40, 82, 900, 620), Rect(410, 648, 260, 30)]
+        if sheet.sheet_number in {"A-03", "A-04"}:
+            return [
+                Rect(30, 90, 470, 590),
+                Rect(490, 90, 470, 590),
+                Rect(18, 430, 932, 250),
+                Rect(820, 160, 132, 340),
+            ]
+        return []
 
     def _draw_page_frame(self, page: PdfPage, project: Project, sheet: Sheet) -> None:
         page.rect(
@@ -134,6 +223,15 @@ class DrawingRenderer:
         y = SHEET_MARGIN
         height = BOTTOM_STRIP_HEIGHT
         columns = [82, 68, 74, 148, 242, 84, 430]
+        x = SHEET_MARGIN
+        for width in columns:
+            page.line(x + width, y, x + width, y + height, width=0.5, stroke_rgb=self.dark)
+            x += width
+        self._draw_bottom_strip_text(page, project, sheet)
+
+    def _draw_bottom_strip_text(self, page: PdfPage, project: Project, sheet: Sheet, include_logo: bool = True) -> None:
+        y = SHEET_MARGIN
+        columns = [82, 68, 74, 148, 242, 84, 430]
         labels = [
             ("Opendoor", 9.0, self.blue),
             (project.created_at.strftime("%m.%d.%y"), 5.2, self.text),
@@ -144,8 +242,10 @@ class DrawingRenderer:
             (project.address, 5.2, self.text),
         ]
         x = SHEET_MARGIN
-        for width, (value, size, color) in zip(columns, labels):
-            page.line(x + width, y, x + width, y + height, width=0.5, stroke_rgb=self.dark)
+        for index, (width, (value, size, color)) in enumerate(zip(columns, labels)):
+            if index == 0 and not include_logo:
+                x += width
+                continue
             page.text(x + 4, y + 5, value, size, fill_rgb=color)
             x += width
         sheet_box_width = (SHEET_WIDTH - SHEET_MARGIN) - x
@@ -282,6 +382,15 @@ class DrawingRenderer:
 
     def _render_plan_sheet(self, page: PdfPage, project: Project, sheet: Sheet) -> None:
         rooms = [room for room in project.rooms if room.id in sheet.room_ids]
+        template_viewports = self._template_viewports(sheet)
+        if template_viewports:
+            if len(rooms) == 1:
+                self._render_room_view(page, rooms[0], sheet.mode, template_viewports[0])
+                return
+            for room, rect in zip(rooms[: len(template_viewports)], template_viewports):
+                self._render_room_view(page, room, sheet.mode, rect)
+            return
+
         show_sidebar = sheet.mode in {SheetMode.LAYOUT, SheetMode.BATH}
         content = self._content_rect(include_sidebar=show_sidebar)
         if show_sidebar:
@@ -305,6 +414,15 @@ class DrawingRenderer:
 
         if sheet.mode == SheetMode.DEMO:
             self._draw_demo_legend(page, Rect(content.x + content.width - 108, content.y + 10, 92, 40))
+
+    def _template_viewports(self, sheet: Sheet) -> list[Rect]:
+        if sheet.sheet_number == "A-01":
+            return [Rect(84, 108, 858, 536)]
+        if sheet.sheet_number == "A-02":
+            return [Rect(88, 104, 820, 548)]
+        if sheet.sheet_number in {"A-03", "A-04"}:
+            return [Rect(74, 130, 396, 278), Rect(524, 130, 396, 278)]
+        return []
 
     def _draw_plan_sidebar(self, page: PdfPage, project: Project, sheet: Sheet, rect: Rect) -> None:
         page.rect(rect.x, rect.y, rect.width, rect.height, stroke_width=0.8, stroke_rgb=self.dark)

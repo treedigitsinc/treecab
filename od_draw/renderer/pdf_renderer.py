@@ -12,6 +12,7 @@ class PdfPage:
     width: float
     height: float
     commands: list[str] = field(default_factory=list)
+    images: list[tuple[bytes, int, int, float, float, float, float]] = field(default_factory=list)
 
     def line(
         self,
@@ -75,6 +76,18 @@ class PdfPage:
             f"{prefix}BT /F1 {size:.2f} Tf {x:.2f} {y:.2f} Td ({_escape_text(value)}) Tj ET"
         )
 
+    def jpeg(
+        self,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        data: bytes,
+        pixel_width: int,
+        pixel_height: int,
+    ) -> None:
+        self.images.append((data, pixel_width, pixel_height, x, y, width, height))
+
 
 class PdfDocument:
     def __init__(self) -> None:
@@ -97,15 +110,35 @@ class PdfDocument:
         page_refs: list[int] = []
 
         for page in self.pages:
-            stream = "\n".join(page.commands).encode("latin-1")
+            image_commands: list[str] = []
+            xobjects: list[str] = []
+            for index, (data, pixel_width, pixel_height, x, y, width, height) in enumerate(page.images, start=1):
+                image_ref = add_object(
+                    b"<< /Type /XObject /Subtype /Image /Width "
+                    + str(pixel_width).encode("ascii")
+                    + b" /Height "
+                    + str(pixel_height).encode("ascii")
+                    + b" /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length "
+                    + str(len(data)).encode("ascii")
+                    + b" >>\nstream\n"
+                    + data
+                    + b"\nendstream"
+                )
+                xobjects.append(f"/Im{index} {image_ref} 0 R")
+                image_commands.append(f"q {width:.2f} 0 0 {height:.2f} {x:.2f} {y:.2f} cm /Im{index} Do Q")
+
+            stream = "\n".join(image_commands + page.commands).encode("latin-1")
             content_ref = add_object(
                 b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream"
             )
+            resources = f"/Font << /F1 {font_obj} 0 R >>"
+            if xobjects:
+                resources += f" /XObject << {' '.join(xobjects)} >>"
             page_ref = add_object(
                 (
                     "<< /Type /Page /Parent 0 0 R /MediaBox [0 0 "
                     f"{page.width:.2f} {page.height:.2f}] "
-                    f"/Contents {content_ref} 0 R /Resources << /Font << /F1 {font_obj} 0 R >> >> >>"
+                    f"/Contents {content_ref} 0 R /Resources << {resources} >> >>"
                 )
             )
             page_refs.append(page_ref)

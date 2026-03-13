@@ -18,6 +18,8 @@ $env:SUPABASE_URL="https://wrvjvijhehyqzrowsfyv.supabase.co"
 $env:SUPABASE_SERVICE_ROLE_KEY="..."
 ```
 
+The app also falls back to the existing system env var `JZ_SUP_TREEDIGITSINC_SERVROLE` if `SUPABASE_SERVICE_ROLE_KEY` is not set.
+
 Apply the database schema in [supabase/migrations/20260313170000_create_projects_table.sql](C:/Users/JZ/git/treecab/supabase/migrations/20260313170000_create_projects_table.sql) to the hosted project before running in Supabase mode.
 
 Run the local editor with:

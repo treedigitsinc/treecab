@@ -2,3 +2,8 @@ build/
 data/
 __pycache__/
 *.pyc
+
+.vercel
+.claude/
+.env*.local
+frontend/node_modules/
