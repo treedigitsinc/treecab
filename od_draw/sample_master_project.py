@@ -88,6 +88,7 @@ def build_sample_master_project() -> Project:
     )
 
     return Project(
+        project_name="Opendoor",
         address="773 Harbor View Rd Charleston, SC 29412",
         project_type="Kitchen",
         kcd_color="OW",

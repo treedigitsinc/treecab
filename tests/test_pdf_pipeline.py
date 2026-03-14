@@ -37,7 +37,10 @@ class PDFPipelineTests(unittest.TestCase):
         source = SheetComposer().build_typst_source(sheet, {viewport.id: "<svg />"}, project)
         self.assertIn(sheet.sheet_number, source)
         self.assertIn(project.address, source)
+        self.assertIn(project.project_name, source)
         self.assertIn(f'{viewport.id}.svg', source)
+        self.assertIn("opendoor-page-0.jpg", source)
+        self.assertNotIn("grid(", source)
 
     def test_pdf_assembler_merges_pdf_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

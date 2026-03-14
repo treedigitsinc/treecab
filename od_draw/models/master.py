@@ -320,6 +320,7 @@ class ModelSpace:
 @dataclass
 class Project:
     id: str = field(default_factory=lambda: str(uuid4()))
+    project_name: str = ""
     address: str = ""
     project_type: str = "Kitchen"
     kcd_color: str = "OW"

@@ -9,6 +9,28 @@ from od_draw.models.master import Project, Sheet
 
 
 class SheetComposer:
+    TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "templates"
+
+    @staticmethod
+    def _typst_text(value: str) -> str:
+        return (
+            " ".join((value or "").split())
+            .replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("[", "\\[")
+            .replace("]", "\\]")
+        )
+
+    def _template_path(self, sheet: Sheet, project: Project) -> str:
+        try:
+            index = next(i for i, candidate in enumerate(project.sheets) if candidate.id == sheet.id)
+        except StopIteration:
+            index = 0
+        candidate = self.TEMPLATE_DIR / f"opendoor-page-{index}.jpg"
+        if not candidate.exists():
+            candidate = self.TEMPLATE_DIR / "opendoor-page-0.jpg"
+        return candidate.as_posix()
+
     def build_typst_source(self, sheet: Sheet, viewport_svgs: dict[str, str], project: Project) -> str:
         viewport_embeds: list[str] = []
         for viewport in sheet.viewports:
@@ -25,25 +47,28 @@ class SheetComposer:
             if sheet.has_notes_sidebar
             else ""
         )
+        project_name = self._typst_text(project.project_name or project.address or "New Project")
+        sheet_title = self._typst_text(f"{sheet.purpose.value} - {sheet.description}")
+        address = self._typst_text(project.address)
+        date_text = self._typst_text(sheet.date or project.date)
+        designer_text = self._typst_text(sheet.designer)
+        scale_text = self._typst_text(sheet.scale)
+        sheet_number = self._typst_text(sheet.sheet_number)
+        template_path = self._template_path(sheet, project)
 
         return f"""
 #set page(width: 17in, height: 11in, margin: 0in)
 #set text(font: "Arial")
-#place(dx: 18pt, dy: 18pt, rect(width: 1188pt, height: 756pt, stroke: 1.5pt + black))
+#place(dx: 0pt, dy: 0pt, image("{template_path}", width: 1224pt, height: 792pt))
 {' '.join(viewport_embeds)}
 {notes_block}
-#place(dx: 18pt, dy: 738pt, grid(
-  columns: (120pt, 100pt, 100pt, 220pt, 140pt, 418pt, 90pt),
-  rows: (36pt,),
-  stroke: 0.75pt + black,
-  [Opendoor],
-  [DATE: {project.date}],
-  [DESIGNER: {sheet.designer}],
-  [{sheet.purpose.value} - {sheet.description}],
-  [SCALE: {sheet.scale}],
-  [STREET ADDRESS: {project.address}],
-  [{sheet.sheet_number}],
-))
+#place(dx: 24pt, dy: 738pt, box(width: 88pt)[#set text(size: 8.5pt, weight: 700)[{project_name}]])
+#place(dx: 124pt, dy: 741pt, box(width: 64pt)[#set text(size: 6.4pt, weight: 600)[{date_text}]])
+#place(dx: 237pt, dy: 741pt, box(width: 132pt)[#set text(size: 6.4pt, weight: 600)[{designer_text}]])
+#place(dx: 408pt, dy: 738pt, box(width: 254pt)[#set text(size: 7.1pt, weight: 700)#align(center)[{sheet_title}]])
+#place(dx: 675pt, dy: 738pt, box(width: 94pt)[#set text(size: 7.1pt, weight: 700)#align(center)[{scale_text}]])
+#place(dx: 846pt, dy: 741pt, box(width: 262pt)[#set text(size: 6.4pt, weight: 600)[{address}]])
+#place(dx: 1170pt, dy: 733pt, box(width: 42pt)[#set text(size: 14pt, weight: 800)#align(center)[{sheet_number}]])
 """
 
     def compose_sheet(self, sheet: Sheet, viewport_svgs: dict[str, str], project: Project) -> bytes:

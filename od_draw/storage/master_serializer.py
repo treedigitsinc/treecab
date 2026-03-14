@@ -355,6 +355,7 @@ def model_from_dict(data: dict) -> ModelSpace:
 def project_to_dict(project: Project) -> dict:
     return {
         "id": project.id,
+        "project_name": project.project_name,
         "address": project.address,
         "project_type": project.project_type,
         "kcd_color": project.kcd_color,
@@ -372,6 +373,7 @@ def project_to_dict(project: Project) -> dict:
 def project_from_dict(data: dict) -> Project:
     return Project(
         id=data["id"],
+        project_name=data.get("project_name", data.get("address", "")),
         address=data.get("address", ""),
         project_type=data.get("project_type", "Kitchen"),
         kcd_color=data.get("kcd_color", "OW"),

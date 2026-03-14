@@ -34,6 +34,7 @@ class MasterApiTests(unittest.TestCase):
         created = self.client.post(
             "/api/master/projects",
             json={
+                "project_name": "Harbor View Kitchen",
                 "address": "1 Master Spec Way",
                 "project_type": "Kitchen",
                 "kcd_color": "OW",
@@ -47,6 +48,7 @@ class MasterApiTests(unittest.TestCase):
         )
         self.assertEqual(created.status_code, 200)
         project = created.json()
+        self.assertEqual(project["project_name"], "Harbor View Kitchen")
         self.assertIn("model", project)
         room_id = project["model"]["rooms"][0]["id"]
         sheet_id = project["sheets"][0]["id"]
@@ -182,7 +184,8 @@ class MasterApiTests(unittest.TestCase):
         typst_url = next(iter(payload["sheet_typst_urls"].values()))
         typst_response = self.client.get(typst_url)
         self.assertEqual(typst_response.status_code, 200)
-        self.assertIn("Opendoor", typst_response.text)
+        self.assertIn("3 Output Ave", typst_response.text)
+        self.assertNotIn("grid(", typst_response.text)
 
         preview = self.client.get(f"/api/master/projects/{project_id}/preview/A-02")
         self.assertEqual(preview.status_code, 503)

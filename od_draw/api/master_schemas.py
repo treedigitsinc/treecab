@@ -24,6 +24,7 @@ class MasterRectPayload(BaseModel):
 
 class MasterProjectCreatePayload(BaseModel):
     project_id: Optional[str] = None
+    project_name: str = ""
     address: str
     project_type: str = "Kitchen"
     kcd_color: str = "OW"
