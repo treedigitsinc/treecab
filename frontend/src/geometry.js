@@ -126,15 +126,37 @@ export function snapWallPoint(point, anchor, room, excludedWallId = null, joinDi
   return aligned;
 }
 
-export function nearestWall(point, room) {
+export function nearestWall(point, room, excludedWallId = null) {
   let best = null;
   for (const wall of room.walls) {
+    if (wall.id === excludedWallId) continue;
     const candidate = projectPointToWall(point, wall);
     if (!best || candidate.distance < best.distance) {
       best = { ...candidate, wall };
     }
   }
   return best;
+}
+
+export function lineIntersection(firstStart, firstEnd, secondStart, secondEnd) {
+  const x1 = firstStart.x;
+  const y1 = firstStart.y;
+  const x2 = firstEnd.x;
+  const y2 = firstEnd.y;
+  const x3 = secondStart.x;
+  const y3 = secondStart.y;
+  const x4 = secondEnd.x;
+  const y4 = secondEnd.y;
+  const denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+  if (Math.abs(denominator) <= ENDPOINT_EPSILON) {
+    return null;
+  }
+  const determinantA = x1 * y2 - y1 * x2;
+  const determinantB = x3 * y4 - y3 * x4;
+  return {
+    x: ((determinantA * (x3 - x4)) - ((x1 - x2) * determinantB)) / denominator,
+    y: ((determinantA * (y3 - y4)) - ((y1 - y2) * determinantB)) / denominator,
+  };
 }
 
 export function wallUnitVectors(wall, view) {

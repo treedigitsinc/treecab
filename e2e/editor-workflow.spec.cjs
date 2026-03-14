@@ -21,28 +21,32 @@ test("project setup opens the canvas and uses right-click actions", async ({ pag
   const canvas = page.locator(".konvajs-content canvas").first();
   await expect(canvas).toBeVisible();
 
-  await canvas.click({ button: "right", position: { x: 180, y: 180 } });
-  await expect(page.locator(".context-menu-title")).toHaveText("Canvas Actions");
-  await expect(page.getByRole("button", { name: "Sketch Existing Wall" })).toBeVisible();
+  await page.keyboard.press("w");
+  await page.keyboard.press("a");
+  await expect(page.getByText("Wall tool active.")).toBeVisible();
 
-  await page.getByRole("button", { name: "Sketch Existing Wall" }).click();
+  await canvas.click({ position: { x: 180, y: 180 } });
   await expect(page.getByText("Wall sketch started.")).toBeVisible();
-
   await canvas.click({ position: { x: 340, y: 180 } });
   await expect(page.getByText("Wall drafted.")).toBeVisible();
 
   await page.getByRole("button", { name: "Save Room" }).click();
   await expect(page.getByText("Room geometry saved.")).toBeVisible();
 
-  await canvas.click({ button: "right", position: { x: 260, y: 180 } });
-  await expect(page.getByRole("button", { name: "Add Door Here" })).toBeVisible();
-  await page.getByRole("button", { name: "Add Door Here" }).click();
+  await page.keyboard.press("d");
+  await page.keyboard.press("r");
+  await expect(page.getByText("Door tool active.")).toBeVisible();
+
+  await canvas.click({ position: { x: 260, y: 180 } });
   await expect(page.getByText("door added. Save room geometry to persist.")).toBeVisible();
 
-  const box = await canvas.boundingBox();
-  await page.mouse.move(box.x + 260, box.y + 180);
-  await page.mouse.down();
-  await page.mouse.move(box.x + 320, box.y + 180, { steps: 10 });
-  await page.mouse.up();
+  await page.keyboard.press("Escape");
+  await canvas.click({ position: { x: 260, y: 200 } });
+
+  await page.keyboard.press("m");
+  await page.keyboard.press("v");
+  await expect(page.getByText("Move tool active.")).toBeVisible();
+
+  await canvas.click({ position: { x: 320, y: 180 } });
   await expect(page.getByText("Opening moved. Save room geometry to persist.")).toBeVisible();
 });

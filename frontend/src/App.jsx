@@ -19,6 +19,7 @@ import {
   clamp,
   createView,
   getBaseCode,
+  lineIntersection,
   nearestWall,
   pointDistance,
   openingScreenGeometry,
@@ -48,6 +49,17 @@ const ZOOM_STEP = 1.14;
 const SNAP_INCREMENT = 0.5;
 const WALL_DRAFT_MIN_LENGTH = 12;
 const OPENING_REHOST_DISTANCE = 18;
+const SHORTCUT_BUFFER_TIMEOUT_MS = 1600;
+const REVIT_SHORTCUTS = {
+  WA: "Wall",
+  DR: "Door",
+  WN: "Window",
+  MV: "Move",
+  AL: "Align",
+  TR: "Trim/Extend",
+  DE: "Delete",
+};
+const REVIT_SHORTCUT_ORDER = ["WA", "DR", "WN", "MV", "AL", "TR", "DE"];
 
 function buildRoomPayload(room) {
   return {
@@ -519,9 +531,12 @@ export default function App() {
   const [isPanning, setIsPanning] = useState(false);
   const [draftMode, setDraftMode] = useState(null);
   const [dragInteraction, setDragInteraction] = useState(null);
+  const [placementMode, setPlacementMode] = useState(null);
+  const [shortcutBuffer, setShortcutBuffer] = useState("");
   const stageHostRef = useRef(null);
   const panPointerRef = useRef(null);
   const dragMovedRef = useRef(false);
+  const shortcutTimerRef = useRef(null);
 
   const catalogMap = {};
   for (const entry of catalog) {
@@ -537,7 +552,28 @@ export default function App() {
   const currentCabinet = selected?.kind === "cabinet" ? room?.cabinets.find((item) => item.id === selected.id) : null;
   const currentOpeningGeometry = currentOpening && view ? openingScreenGeometry(currentOpening, room, view) : null;
   const roomTag = room ? `${String(room.room_number).padStart(2, "0")} ${room.label}` : "";
-  const canvasModeLabel = draftMode ? "Wall sketch" : isPanning ? "Panning view" : dragInteraction ? "Editing selection" : "Drafting view";
+  const shortcutMatches = shortcutBuffer
+    ? REVIT_SHORTCUT_ORDER.filter((code) => code.startsWith(shortcutBuffer))
+    : [];
+  const activeToolLabel = placementMode?.kind === "wall"
+    ? "Wall tool"
+    : placementMode?.kind === "opening"
+      ? `${placementMode.openingKind} tool`
+      : placementMode?.kind === "move-selection"
+        ? "Move tool"
+        : placementMode?.kind === "trim"
+          ? "Trim tool"
+          : "Modify";
+  const shortcutLabel = shortcutBuffer
+    ? `Shortcut ${shortcutBuffer}${shortcutMatches[0] ? ` -> ${shortcutMatches[0]} ${REVIT_SHORTCUTS[shortcutMatches[0]]}` : ""}`
+    : "Type WA / DR / WN / MV / AL / TR / DE";
+  const canvasModeLabel = draftMode
+    ? "Wall sketch"
+    : isPanning
+      ? "Panning view"
+      : dragInteraction
+        ? "Editing selection"
+        : activeToolLabel;
   const draftEndPoint = room && draftMode?.kind === "wall" && cursorWorld
     ? snapWallPoint(cursorWorld, draftMode.start, room)
     : null;
@@ -581,33 +617,131 @@ export default function App() {
   useEffect(() => {
     panPointerRef.current = null;
     dragMovedRef.current = false;
+    window.clearTimeout(shortcutTimerRef.current);
     setIsPanning(false);
     setCursorScreen(null);
     setCanvasCamera({ zoom: 1, panX: 0, panY: 0 });
     setDraftMode(null);
     setDragInteraction(null);
+    setPlacementMode(null);
+    setShortcutBuffer("");
   }, [project?.id, roomId]);
 
   function closeContextMenu() {
     setContextMenu(null);
   }
 
+  function clearShortcutBuffer() {
+    window.clearTimeout(shortcutTimerRef.current);
+    shortcutTimerRef.current = null;
+    setShortcutBuffer("");
+  }
+
+  function refreshShortcutBuffer(nextBuffer) {
+    window.clearTimeout(shortcutTimerRef.current);
+    if (!nextBuffer) {
+      shortcutTimerRef.current = null;
+      setShortcutBuffer("");
+      return;
+    }
+    setShortcutBuffer(nextBuffer);
+    shortcutTimerRef.current = window.setTimeout(() => {
+      shortcutTimerRef.current = null;
+      setShortcutBuffer("");
+    }, SHORTCUT_BUFFER_TIMEOUT_MS);
+  }
+
+  function setActiveTool(nextPlacementMode, message) {
+    setPlacementMode(nextPlacementMode);
+    setDraftMode(null);
+    setDragInteraction(null);
+    dragMovedRef.current = false;
+    if (message) {
+      setStatus(message);
+    }
+  }
+
+  function cancelCurrentTool(message = "Tool canceled.") {
+    setPlacementMode(null);
+    setDraftMode(null);
+    setDragInteraction(null);
+    dragMovedRef.current = false;
+    clearShortcutBuffer();
+    if (message) {
+      setStatus(message);
+    }
+  }
+
   useEffect(() => {
     const handleKeyDown = (event) => {
       if (event.key !== "Escape") return;
       closeContextMenu();
-      if (draftMode) {
-        setDraftMode(null);
-        setStatus("Wall sketch canceled.");
+      if (draftMode || dragInteraction || placementMode || shortcutBuffer) {
+        cancelCurrentTool(draftMode ? "Wall sketch canceled." : "Tool canceled.");
+        return;
       }
-      if (dragInteraction) {
-        dragMovedRef.current = false;
-        setDragInteraction(null);
+      clearShortcutBuffer();
+      if (selected) {
+        setSelected(null);
+        setStatus("Selection cleared.");
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [draftMode, dragInteraction]);
+  }, [draftMode, dragInteraction, placementMode, selected, shortcutBuffer]);
+
+  useEffect(() => () => {
+    window.clearTimeout(shortcutTimerRef.current);
+  }, []);
+
+  useEffect(() => {
+    const handleShortcutKey = (event) => {
+      const target = event.target;
+      const isEditable = target instanceof HTMLElement
+        && (
+          target.tagName === "INPUT"
+          || target.tagName === "SELECT"
+          || target.tagName === "TEXTAREA"
+          || target.isContentEditable
+        );
+      if (isEditable || event.ctrlKey || event.metaKey || event.altKey) {
+        return;
+      }
+      if (event.key === " ") {
+        if (!shortcutBuffer || !shortcutMatches.length) return;
+        event.preventDefault();
+        executeShortcut(shortcutMatches[0]);
+        return;
+      }
+      if (!/^[a-z]$/i.test(event.key)) {
+        return;
+      }
+      const key = event.key.toUpperCase();
+      const direct = REVIT_SHORTCUT_ORDER.find((code) => code === key);
+      const appended = `${shortcutBuffer}${key}`.slice(-2);
+      const nextBuffer = REVIT_SHORTCUT_ORDER.some((code) => code.startsWith(appended))
+        ? appended
+        : REVIT_SHORTCUT_ORDER.some((code) => code.startsWith(key))
+          ? key
+          : "";
+      if (!direct && !nextBuffer) {
+        clearShortcutBuffer();
+        return;
+      }
+      event.preventDefault();
+      if (REVIT_SHORTCUT_ORDER.includes(nextBuffer)) {
+        executeShortcut(nextBuffer);
+        return;
+      }
+      refreshShortcutBuffer(nextBuffer);
+      if (nextBuffer) {
+        const preview = REVIT_SHORTCUT_ORDER.find((code) => code.startsWith(nextBuffer));
+        setStatus(preview ? `Shortcut ${nextBuffer}: ${REVIT_SHORTCUTS[preview]} (press Space or complete the sequence).` : `Shortcut ${nextBuffer}`);
+      }
+    };
+    window.addEventListener("keydown", handleShortcutKey);
+    return () => window.removeEventListener("keydown", handleShortcutKey);
+  }, [shortcutBuffer, shortcutMatches, selected, roomDirty, project, room]);
 
   function updateGeneration(nextGeneration) {
     setGeneration(nextGeneration);
@@ -690,6 +824,171 @@ export default function App() {
       opening.wall_id = placement.wall_id;
       opening.position_along_wall = placement.position_along_wall;
     });
+  }
+
+  function moveSelectedElement(worldPoint) {
+    if (!selected || !room) {
+      setStatus("Select an element before using Move.");
+      setPlacementMode(null);
+      return;
+    }
+    const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
+    if (selected.kind === "opening") {
+      moveOpening(selected.id, snappedPoint);
+      setPlacementMode(null);
+      setStatus("Opening moved. Save room geometry to persist.");
+      return;
+    }
+    if (selected.kind === "wall") {
+      mutateRoom((target) => {
+        const wall = target.walls.find((item) => item.id === selected.id);
+        if (!wall) return;
+        const midpoint = {
+          x: (wall.start.x + wall.end.x) / 2,
+          y: (wall.start.y + wall.end.y) / 2,
+        };
+        const deltaX = snappedPoint.x - midpoint.x;
+        const deltaY = snappedPoint.y - midpoint.y;
+        wall.start = { x: wall.start.x + deltaX, y: wall.start.y + deltaY };
+        wall.end = { x: wall.end.x + deltaX, y: wall.end.y + deltaY };
+        updateWallChildren(target, wall);
+      });
+      setPlacementMode(null);
+      setStatus("Wall moved. Save room geometry to persist.");
+      return;
+    }
+    if (selected.kind === "cabinet") {
+      if (!project || roomDirty) {
+        setStatus("Save room geometry before moving cabinets.");
+        setPlacementMode(null);
+        return;
+      }
+      const cabinet = room.cabinets.find((item) => item.id === selected.id);
+      if (!cabinet) {
+        setPlacementMode(null);
+        return;
+      }
+      const targetWall = nearestWall(snappedPoint, room);
+      if (!targetWall?.wall) {
+        setStatus("Move the cabinet closer to a wall.");
+        setPlacementMode(null);
+        return;
+      }
+      const entry = catalogMap[getBaseCode(cabinet.kcd_code)];
+      if (!entry) {
+        setPlacementMode(null);
+        return;
+      }
+      const offset = clamp(targetWall.offset - entry.width / 2, 0, Math.max(wallLength(targetWall.wall) - entry.width, 0));
+      updateSelectedCabinet({
+        wall_id: targetWall.wall.id,
+        offset_from_wall_start: offset,
+      });
+      setPlacementMode(null);
+      return;
+    }
+  }
+
+  function alignSelectedElement() {
+    if (!selected || !room) {
+      setStatus("Select a wall before using Align.");
+      return;
+    }
+    if (selected.kind !== "wall") {
+      setStatus("Align is available for walls in treecab.");
+      return;
+    }
+    mutateRoom((target) => {
+      const wall = target.walls.find((item) => item.id === selected.id);
+      if (!wall) return;
+      const dx = wall.end.x - wall.start.x;
+      const dy = wall.end.y - wall.start.y;
+      if (Math.abs(dx) >= Math.abs(dy)) {
+        const y = (wall.start.y + wall.end.y) / 2;
+        wall.start.y = y;
+        wall.end.y = y;
+      } else {
+        const x = (wall.start.x + wall.end.x) / 2;
+        wall.start.x = x;
+        wall.end.x = x;
+      }
+      updateWallChildren(target, wall);
+    });
+    setStatus("Wall aligned to its dominant axis. Save room geometry to persist.");
+  }
+
+  function trimSelectedWallToPoint(worldPoint) {
+    if (!selected || selected.kind !== "wall" || !room) {
+      setPlacementMode(null);
+      setStatus("Select a wall before using Trim/Extend.");
+      return;
+    }
+
+    let trimmed = false;
+    mutateRoom((target) => {
+      const wall = target.walls.find((item) => item.id === selected.id);
+      if (!wall) return;
+      const candidate = nearestWall(worldPoint, target, wall.id);
+      if (!candidate?.wall) return;
+      const intersection = lineIntersection(wall.start, wall.end, candidate.wall.start, candidate.wall.end);
+      if (!intersection) return;
+      const snappedIntersection = snapWallPoint(intersection, null, target, wall.id);
+      const startDistance = pointDistance(wall.start, snappedIntersection);
+      const endDistance = pointDistance(wall.end, snappedIntersection);
+      const endpointKey = startDistance <= endDistance ? "start" : "end";
+      const anchorKey = endpointKey === "start" ? "end" : "start";
+      if (pointDistance(wall[anchorKey], snappedIntersection) < WALL_DRAFT_MIN_LENGTH) {
+        return;
+      }
+      wall[endpointKey] = snappedIntersection;
+      updateWallChildren(target, wall);
+      trimmed = true;
+    });
+    setPlacementMode(null);
+    setStatus(trimmed ? "Wall trimmed to the clicked wall. Save room geometry to persist." : "Trim/Extend could not find a nearby wall.");
+  }
+
+  function executeShortcut(shortcut) {
+    clearShortcutBuffer();
+    if (shortcut === "WA") {
+      setActiveTool({ kind: "wall", status: "new" }, "Wall tool active. Click to set the start point, then click again to finish. Press Esc to cancel.");
+      return;
+    }
+    if (shortcut === "DR") {
+      setActiveTool({ kind: "opening", openingKind: "door", width: 30 }, "Door tool active. Click a wall to place doors. Press Esc to cancel.");
+      return;
+    }
+    if (shortcut === "WN") {
+      setActiveTool({ kind: "opening", openingKind: "window", width: 36 }, "Window tool active. Click a wall to place windows. Press Esc to cancel.");
+      return;
+    }
+    if (shortcut === "MV") {
+      if (!selected) {
+        setStatus("Select a wall, opening, or cabinet before using Move.");
+        return;
+      }
+      setActiveTool({ kind: "move-selection" }, "Move tool active. Click the target location for the selected element.");
+      return;
+    }
+    if (shortcut === "AL") {
+      alignSelectedElement();
+      return;
+    }
+    if (shortcut === "TR") {
+      if (!selected || selected.kind !== "wall") {
+        setStatus("Select a wall before using Trim/Extend.");
+        return;
+      }
+      setActiveTool({ kind: "trim", wallId: selected.id }, "Trim/Extend active. Click another wall to join the selected wall to it.");
+      return;
+    }
+    if (shortcut === "DE") {
+      if (!selected) {
+        setStatus("Select an element before using Delete.");
+        return;
+      }
+      deleteSelectedElement();
+    }
   }
 
   function setCanvasZoom(nextZoom, pointer = null) {
@@ -845,11 +1144,12 @@ export default function App() {
       setStatus("Right-click closer to a wall to place an opening.");
       return;
     }
+    const openingId = `opening-${Date.now()}`;
     mutateRoom((target) => {
       const wall = target.walls.find((item) => item.id === targetWall.wall.id);
       if (!wall) return;
       target.openings.push({
-        id: `opening-${Date.now()}`,
+        id: openingId,
         wall_id: wall.id,
         kind: openingKind,
         position_along_wall: clamp(targetWall.offset - width / 2, 0, Math.max(wallLength(wall) - width, 0)),
@@ -860,6 +1160,7 @@ export default function App() {
         verify_in_field: false,
       });
     });
+    setSelected({ kind: "opening", id: openingId });
     setStatus(`${openingKind} added. Save room geometry to persist.`);
   }
 
@@ -1016,7 +1317,7 @@ export default function App() {
   }
 
   function startWallEndpointDrag(event, wallId, endpointKey) {
-    if (event.evt.button !== 0) return;
+    if (event.evt.button !== 0 || placementMode || draftMode) return;
     event.cancelBubble = true;
     closeContextMenu();
     dragMovedRef.current = false;
@@ -1025,7 +1326,7 @@ export default function App() {
   }
 
   function startOpeningDrag(event, openingId) {
-    if (event.evt.button !== 0) return;
+    if (event.evt.button !== 0 || placementMode || draftMode) return;
     event.cancelBubble = true;
     closeContextMenu();
     dragMovedRef.current = false;
@@ -1047,6 +1348,29 @@ export default function App() {
     closeContextMenu();
     const stage = event.target.getStage();
     const pointer = stage?.getPointerPosition();
+    if (pointer && view && event.evt.button === 0) {
+      const worldPoint = view.screenToWorld(pointer);
+      if (placementMode?.kind === "opening") {
+        event.evt.preventDefault();
+        addOpeningAtPoint(placementMode.openingKind, placementMode.width, worldPoint);
+        return;
+      }
+      if (placementMode?.kind === "move-selection") {
+        event.evt.preventDefault();
+        moveSelectedElement(worldPoint);
+        return;
+      }
+      if (placementMode?.kind === "trim") {
+        event.evt.preventDefault();
+        trimSelectedWallToPoint(worldPoint);
+        return;
+      }
+      if (placementMode?.kind === "wall" && !draftMode) {
+        event.evt.preventDefault();
+        beginWallDraft(worldPoint, placementMode.status);
+        return;
+      }
+    }
     if (draftMode && pointer && event.evt.button === 0) {
       event.evt.preventDefault();
       finalizeWallDraft(view.screenToWorld(pointer));
@@ -1218,10 +1542,10 @@ export default function App() {
           <section className="panel">
             <div className="section-head">
               <h2>Canvas Actions</h2>
-              <span className="hint">Right-click to sketch</span>
+              <span className="hint">Revit-style shortcuts</span>
             </div>
             <div className="stack">
-              <p className="hint">Right-click on the plan to sketch walls or place elements. Drag blue wall grips to join corners and drag openings to slide them within walls.</p>
+              <p className="hint">Right-click on the plan to sketch walls or place elements. Use `WA`, `DR`, `WN`, `MV`, `AL`, `TR`, `DE`, and `Esc` like Revit for the matching tools in treecab.</p>
               <label>
                 Cabinet Preset
                 <select value={catalogCode} onChange={(event) => setCatalogCode(event.target.value)}>
@@ -1245,7 +1569,7 @@ export default function App() {
             <div className="section-head">
               <div>
                 <h2>Plan Canvas</h2>
-                <p className="hint">Wheel to zoom, middle mouse to pan, right-click to sketch/place, and drag wall grips or openings to refine the plan.</p>
+                <p className="hint">Wheel to zoom, middle mouse to pan, type Revit shortcuts for tools, and drag wall grips or openings to refine the plan.</p>
               </div>
               <span className={roomDirty ? "dirty-flag active" : "dirty-flag"}>{roomDirty ? "Unsaved room changes" : "Room synced"}</span>
             </div>
@@ -1255,6 +1579,7 @@ export default function App() {
                   <span className="canvas-chip canvas-chip-strong">Level 1</span>
                   <span className="canvas-chip">{roomTag}</span>
                   <span className="canvas-chip">{canvasModeLabel}</span>
+                  <span className="canvas-chip">{shortcutLabel}</span>
                 </div>
                 <div className="canvas-toolbar-group">
                   <button type="button" className="canvas-tool" onClick={() => setCanvasZoom(canvasCamera.zoom / ZOOM_STEP)}>
@@ -1301,6 +1626,15 @@ export default function App() {
                       ]);
                       return;
                     }
+                    if (placementMode) {
+                      openContextMenu(pointer, activeToolLabel, [
+                        {
+                          label: "Cancel Tool",
+                          onSelect: () => cancelCurrentTool(),
+                        },
+                      ]);
+                      return;
+                    }
                     buildCanvasMenu(snapWorldPoint(view.screenToWorld(pointer)) || view.screenToWorld(pointer), pointer);
                   }}
                 >
@@ -1332,7 +1666,10 @@ export default function App() {
                       return (
                         <Group
                           key={wall.id}
-                          onMouseDown={() => setSelected({ kind: "wall", id: wall.id })}
+                          onMouseDown={() => {
+                            if (placementMode || draftMode) return;
+                            setSelected({ kind: "wall", id: wall.id });
+                          }}
                           onContextMenu={(event) => {
                             if (draftMode) return;
                             event.evt.preventDefault();
@@ -1354,7 +1691,10 @@ export default function App() {
                           opening={opening}
                           geometry={geometry}
                           isSelected={selected?.kind === "opening" && selected.id === opening.id}
-                          onSelect={() => setSelected({ kind: "opening", id: opening.id })}
+                          onSelect={() => {
+                            if (placementMode || draftMode) return;
+                            setSelected({ kind: "opening", id: opening.id });
+                          }}
                           onDragStart={(event) => startOpeningDrag(event, opening.id)}
                           onContextMenu={(event) => {
                             if (draftMode) return;
@@ -1372,7 +1712,10 @@ export default function App() {
                       return (
                         <Group
                           key={cabinet.id}
-                          onMouseDown={() => setSelected({ kind: "cabinet", id: cabinet.id })}
+                          onMouseDown={() => {
+                            if (placementMode || draftMode) return;
+                            setSelected({ kind: "cabinet", id: cabinet.id });
+                          }}
                           onContextMenu={(event) => {
                             if (draftMode) return;
                             event.evt.preventDefault();
@@ -1423,6 +1766,7 @@ export default function App() {
                 <div className="empty canvas-empty">No room loaded.</div>
               )}
               <div className="canvas-statusbar">
+                <span>{activeToolLabel}</span>
                 <span>Zoom {Math.round(canvasCamera.zoom * 100)}%</span>
                 <span>X {formatDraftValue(cursorWorld?.x)}</span>
                 <span>Y {formatDraftValue(cursorWorld?.y)}</span>
