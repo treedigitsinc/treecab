@@ -53,7 +53,9 @@ export function createView(room, width, height) {
 }
 
 export function wallOrientation(wall, bounds) {
-  if (Math.abs(wall.start.y - wall.end.y) < 0.001) {
+  const dx = Math.abs(wall.end.x - wall.start.x);
+  const dy = Math.abs(wall.end.y - wall.start.y);
+  if (dx >= dy) {
     return wall.start.y >= bounds.maxY ? "top" : "bottom";
   }
   return wall.start.x >= bounds.maxX ? "right" : "left";
@@ -87,12 +89,107 @@ export function nearestWall(point, room) {
   return best;
 }
 
-export function openingScreenLine(opening, room, view) {
+export function wallUnitVectors(wall, view) {
+  const start = view.worldToScreen(wall.start);
+  const end = view.worldToScreen(wall.end);
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy) || 1;
+  return {
+    start,
+    end,
+    tangent: { x: dx / length, y: dy / length },
+    normal: { x: -dy / length, y: dx / length },
+  };
+}
+
+export function polygonBounds(points) {
+  const xs = [];
+  const ys = [];
+  for (let index = 0; index < points.length; index += 2) {
+    xs.push(points[index]);
+    ys.push(points[index + 1]);
+  }
+  return {
+    minX: Math.min(...xs),
+    minY: Math.min(...ys),
+    maxX: Math.max(...xs),
+    maxY: Math.max(...ys),
+  };
+}
+
+export function wallPolygon(wall, view) {
+  const { start, end, normal } = wallUnitVectors(wall, view);
+  const halfThickness = Math.max((wall.thickness || 4.5) * view.scale, 12) / 2;
+  const points = [
+    start.x - normal.x * halfThickness,
+    start.y - normal.y * halfThickness,
+    end.x - normal.x * halfThickness,
+    end.y - normal.y * halfThickness,
+    end.x + normal.x * halfThickness,
+    end.y + normal.y * halfThickness,
+    start.x + normal.x * halfThickness,
+    start.y + normal.y * halfThickness,
+  ];
+  return {
+    points,
+    bounds: polygonBounds(points),
+    thickness: halfThickness * 2,
+  };
+}
+
+export function interiorNormalForWall(wall, room) {
+  const bounds = roomBounds(room);
+  const orientation = wallOrientation(wall, bounds);
+  if (orientation === "top") return { x: 0, y: -1 };
+  if (orientation === "bottom") return { x: 0, y: 1 };
+  if (orientation === "right") return { x: -1, y: 0 };
+  return { x: 1, y: 0 };
+}
+
+export function openingScreenGeometry(opening, room, view) {
   const wall = room.walls.find((candidate) => candidate.id === opening.wall_id);
   if (!wall) return null;
   const start = view.worldToScreen(pointAtWallOffset(wall, opening.position_along_wall));
   const end = view.worldToScreen(pointAtWallOffset(wall, opening.position_along_wall + opening.width));
-  return { wall, start, end };
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy) || 1;
+  const tangent = { x: dx / length, y: dy / length };
+  const normal = { x: -tangent.y, y: tangent.x };
+  const interior = interiorNormalForWall(wall, room);
+  const thickness = Math.max((wall.thickness || 4.5) * view.scale, 12);
+  const center = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+  const gap = [
+    start.x - normal.x * (thickness / 2),
+    start.y - normal.y * (thickness / 2),
+    end.x - normal.x * (thickness / 2),
+    end.y - normal.y * (thickness / 2),
+    end.x + normal.x * (thickness / 2),
+    end.y + normal.y * (thickness / 2),
+    start.x + normal.x * (thickness / 2),
+    start.y + normal.y * (thickness / 2),
+  ];
+  return {
+    wall,
+    start,
+    end,
+    center,
+    tangent,
+    normal,
+    interior,
+    thickness,
+    gap,
+  };
+}
+
+export function sampleArcPoints(center, radius, startAngle, endAngle, steps = 18) {
+  const points = [];
+  for (let index = 0; index <= steps; index += 1) {
+    const angle = startAngle + ((endAngle - startAngle) * index) / steps;
+    points.push(center.x + Math.cos(angle) * radius, center.y + Math.sin(angle) * radius);
+  }
+  return points;
 }
 
 export function getBaseCode(code) {
@@ -111,7 +208,7 @@ export function cabinetScreenRect(cabinet, room, view, catalogMap) {
   if (!entry) return null;
   const start = view.worldToScreen(pointAtWallOffset(wall, cabinet.offset_from_wall_start));
   const end = view.worldToScreen(pointAtWallOffset(wall, cabinet.offset_from_wall_start + entry.width));
-  const depth = Math.max(entry.depth * view.scale, 16);
+  const depth = Math.max(entry.depth * view.scale, 20);
   const orientation = wallOrientation(wall, bounds);
 
   if (orientation === "top") {

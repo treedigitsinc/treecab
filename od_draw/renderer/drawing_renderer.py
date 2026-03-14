@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 from pathlib import Path
 
@@ -478,26 +479,10 @@ class DrawingRenderer:
             self._draw_hatched_rect(page, hatch, self.mid)
 
         for wall in room.walls:
-            start = self._map_point(room, wall.start, viewport)
-            end = self._map_point(room, wall.end, viewport)
-            width = 1.8 if wall.status == WallStatus.NEW else 1.2
-            color = self.dark
-            if wall.status == WallStatus.TO_REMOVE:
-                color = self.demo
-                width = 2.0
-            elif wall.status == WallStatus.NEW:
-                color = self.new
-            page.line(start.x, start.y, end.x, end.y, width=width, stroke_rgb=color)
+            self._render_plan_wall(page, room, wall, viewport)
 
         for opening in room.openings:
-            wall = next(candidate for candidate in room.walls if candidate.id == opening.wall_id)
-            start = self._map_point(room, wall.point_at(opening.position_along_wall), viewport)
-            end = self._map_point(room, wall.point_at(opening.position_along_wall + opening.width), viewport)
-            page.line(start.x, start.y, end.x, end.y, width=4.0, stroke_rgb=self.bg)
-            page.line(start.x, start.y, end.x, end.y, width=0.8, stroke_rgb=self.muted)
-            label_x = min(start.x, end.x) + 2
-            label_y = max(start.y, end.y) + 6
-            page.text(label_x, label_y, opening.kind.value.upper(), 4.8, fill_rgb=self.muted)
+            self._render_plan_opening(page, room, opening, viewport)
 
         if mode in {SheetMode.LAYOUT, SheetMode.BATH, SheetMode.DEMO}:
             for cabinet in room.cabinets:
@@ -541,6 +526,83 @@ class DrawingRenderer:
             origin_x + ((point.x - min_x) * scale),
             origin_y + ((point.y - min_y) * scale),
         )
+
+    def _render_plan_wall(self, page: PdfPage, room: Room, wall, viewport: Rect) -> None:
+        start = self._map_point(room, wall.start, viewport)
+        end = self._map_point(room, wall.end, viewport)
+        _, _, scale, _, _ = self._room_transform(room, viewport)
+        thickness = max(wall.thickness * scale, 8.0)
+        is_horizontal = abs(start.y - end.y) <= abs(start.x - end.x)
+
+        if is_horizontal:
+            rect = Rect(min(start.x, end.x), start.y - (thickness / 2), abs(end.x - start.x), thickness)
+        else:
+            rect = Rect(start.x - (thickness / 2), min(start.y, end.y), thickness, abs(end.y - start.y))
+
+        if wall.status == WallStatus.TO_REMOVE:
+            page.rect(rect.x, rect.y, rect.width, rect.height, stroke_width=0.9, stroke_rgb=self.demo, fill_rgb=self.demo)
+            self._draw_hatched_rect(page, rect, self.demo)
+            page.rect(rect.x, rect.y, rect.width, rect.height, stroke_width=0.9, stroke_rgb=self.dark)
+            return
+
+        fill = self.bg if wall.status == WallStatus.EXISTING else self.mid
+        page.rect(rect.x, rect.y, rect.width, rect.height, stroke_width=0.9, stroke_rgb=self.dark, fill_rgb=fill)
+
+    def _render_plan_opening(self, page: PdfPage, room: Room, opening, viewport: Rect) -> None:
+        wall = next(candidate for candidate in room.walls if candidate.id == opening.wall_id)
+        bounds = self._room_bounds(room)
+        _, _, scale, _, _ = self._room_transform(room, viewport)
+        start = self._map_point(room, wall.point_at(opening.position_along_wall), viewport)
+        end = self._map_point(room, wall.point_at(opening.position_along_wall + opening.width), viewport)
+        thickness = max(wall.thickness * scale, 8.0)
+        is_horizontal = abs(start.y - end.y) <= abs(start.x - end.x)
+
+        if is_horizontal:
+            gap = Rect(min(start.x, end.x), start.y - (thickness / 2), abs(end.x - start.x), thickness)
+            page.rect(gap.x, gap.y, gap.width, gap.height, stroke_width=0.7, stroke_rgb=self.bg, fill_rgb=self.bg)
+            page.line(gap.x, gap.y, gap.x, gap.y + gap.height, width=0.7, stroke_rgb=self.muted)
+            page.line(gap.x + gap.width, gap.y, gap.x + gap.width, gap.y + gap.height, width=0.7, stroke_rgb=self.muted)
+            if opening.kind.value == "window":
+                page.line(gap.x, gap.y + (gap.height * 0.35), gap.x + gap.width, gap.y + (gap.height * 0.35), width=0.7, stroke_rgb=self.muted)
+                page.line(gap.x, gap.y + (gap.height * 0.65), gap.x + gap.width, gap.y + (gap.height * 0.65), width=0.7, stroke_rgb=self.muted)
+                return
+            if opening.kind.value == "door":
+                hinge_x = gap.x
+                swing = -1 if wall.start.y >= bounds[3] and wall.end.y >= bounds[3] else 1
+                door_end = Point2D(hinge_x, gap.y + (gap.height / 2) + (gap.width * swing))
+                page.line(hinge_x, gap.y + (gap.height / 2), door_end.x, door_end.y, width=0.7, stroke_rgb=self.muted)
+                self._draw_arc(page, Point2D(hinge_x, gap.y + (gap.height / 2)), gap.width, 0 if swing > 0 else -90, 90 if swing > 0 else 0)
+                return
+            page.line(gap.x, gap.y + (gap.height / 2), gap.x + gap.width, gap.y + (gap.height / 2), width=0.6, stroke_rgb=self.muted, dash=(3.0, 2.0))
+            return
+
+        gap = Rect(start.x - (thickness / 2), min(start.y, end.y), thickness, abs(end.y - start.y))
+        page.rect(gap.x, gap.y, gap.width, gap.height, stroke_width=0.7, stroke_rgb=self.bg, fill_rgb=self.bg)
+        page.line(gap.x, gap.y, gap.x + gap.width, gap.y, width=0.7, stroke_rgb=self.muted)
+        page.line(gap.x, gap.y + gap.height, gap.x + gap.width, gap.y + gap.height, width=0.7, stroke_rgb=self.muted)
+        if opening.kind.value == "window":
+            page.line(gap.x + (gap.width * 0.35), gap.y, gap.x + (gap.width * 0.35), gap.y + gap.height, width=0.7, stroke_rgb=self.muted)
+            page.line(gap.x + (gap.width * 0.65), gap.y, gap.x + (gap.width * 0.65), gap.y + gap.height, width=0.7, stroke_rgb=self.muted)
+            return
+        if opening.kind.value == "door":
+            hinge_y = gap.y + gap.height
+            swing = -1 if wall.start.x >= bounds[2] and wall.end.x >= bounds[2] else 1
+            door_end = Point2D(gap.x + (gap.width / 2) + (gap.height * swing), hinge_y)
+            page.line(gap.x + (gap.width / 2), hinge_y, door_end.x, door_end.y, width=0.7, stroke_rgb=self.muted)
+            self._draw_arc(page, Point2D(gap.x + (gap.width / 2), hinge_y), gap.height, 90 if swing > 0 else 180, 180 if swing > 0 else 270)
+            return
+        page.line(gap.x + (gap.width / 2), gap.y, gap.x + (gap.width / 2), gap.y + gap.height, width=0.6, stroke_rgb=self.muted, dash=(3.0, 2.0))
+
+    def _draw_arc(self, page: PdfPage, center: Point2D, radius: float, start_angle: float, end_angle: float) -> None:
+        steps = 10
+        points = []
+        start_radians = start_angle * 3.141592653589793 / 180
+        end_radians = end_angle * 3.141592653589793 / 180
+        for index in range(steps + 1):
+            angle = start_radians + ((end_radians - start_radians) * index / steps)
+            points.append(Point2D(center.x + radius * math.cos(angle), center.y + radius * math.sin(angle)))
+        for first, second in zip(points, points[1:]):
+            page.line(first.x, first.y, second.x, second.y, width=0.6, stroke_rgb=self.muted)
 
     def _render_cabinet(self, page: PdfPage, room: Room, cabinet, viewport: Rect, mode: SheetMode) -> None:
         wall = next(candidate for candidate in room.walls if candidate.id == cabinet.wall_id)

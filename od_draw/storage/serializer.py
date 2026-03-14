@@ -231,6 +231,7 @@ def project_to_dict(project: Project) -> dict:
         "crown_molding": project.crown_molding,
         "designer": project.designer,
         "created_at": project.created_at.isoformat(),
+        "project_scope": project.project_scope,
         "rooms": [room_to_dict(room) for room in project.rooms],
         "sheets": [sheet_to_dict(sheet) for sheet in project.sheets],
     }
@@ -247,6 +248,7 @@ def project_from_dict(data: dict) -> Project:
         crown_molding=data["crown_molding"],
         designer=data["designer"],
         created_at=date.fromisoformat(data["created_at"]),
+        project_scope=data.get("project_scope", "Kitchen"),
         rooms=[room_from_dict(room) for room in data.get("rooms", [])],
         sheets=[sheet_from_dict(sheet) for sheet in data.get("sheets", [])],
     )

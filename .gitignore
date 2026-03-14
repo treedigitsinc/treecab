@@ -7,3 +7,4 @@ __pycache__/
 .claude/
 .env*.local
 frontend/node_modules/
+node_modules/

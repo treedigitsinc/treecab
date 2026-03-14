@@ -53,6 +53,7 @@ class RoomPayload(BaseModel):
 
 class ProjectMetadataPayload(BaseModel):
     address: str
+    project_scope: str = "Kitchen"
     kcd_color: str
     kcd_style: str
     drawer_type: str

@@ -205,13 +205,27 @@ LOGIN_PAGE = """<!doctype html>
 """
 
 
+def scope_to_room_defaults(scope: str) -> tuple[RoomType, str]:
+    normalized = scope.strip().lower()
+    if "laundry" in normalized:
+        return RoomType.LAUNDRY, "Laundry"
+    if "main bath" in normalized:
+        return RoomType.MAIN_BATH, "Main Bath"
+    if "bath" in normalized:
+        return RoomType.BATH, "Bath"
+    if "dining" in normalized:
+        return RoomType.DINING, "Dining"
+    return RoomType.KITCHEN, "Kitchen"
+
+
 def build_blank_project(payload: CreateProjectPayload) -> Project:
     project_id = payload.project_id or f"project-{uuid4().hex[:8]}"
+    room_type, room_label = scope_to_room_defaults(payload.project_scope)
     room = Room(
         id="room-1",
-        room_type=RoomType.KITCHEN,
+        room_type=room_type,
         room_number=1,
-        label="Kitchen",
+        label=room_label,
         ceiling_height=96.0,
         walls=[],
     )
@@ -234,6 +248,7 @@ def build_blank_project(payload: CreateProjectPayload) -> Project:
         crown_molding=payload.crown_molding,
         designer=payload.designer,
         created_at=date.today(),
+        project_scope=payload.project_scope,
         rooms=[room],
     )
     prepare_project(project)
@@ -551,6 +566,7 @@ def create_app(
             project.uppers_height = payload.uppers_height
             project.crown_molding = payload.crown_molding
             project.designer = payload.designer
+            project.project_scope = payload.project_scope
             project.created_at = date.today()
         else:
             project = build_blank_project(payload)
@@ -572,6 +588,7 @@ def create_app(
         project.uppers_height = payload.uppers_height
         project.crown_molding = payload.crown_molding
         project.designer = payload.designer
+        project.project_scope = payload.project_scope
         save_project(project)
         return legacy_project_to_dict(project)
 

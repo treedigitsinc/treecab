@@ -57,5 +57,6 @@ def build_sample_project() -> Project:
         crown_molding="Flat",
         designer="LOCAL MVP",
         created_at=date(2026, 3, 13),
+        project_scope="Kitchen + Baths",
         rooms=[kitchen, main_bath, secondary_bath],
     )

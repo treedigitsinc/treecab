@@ -56,6 +56,7 @@ class ApiTests(unittest.TestCase):
         self.login()
         payload = {
             "address": "773 Harbor View Rd, Charleston, SC 29412",
+            "project_scope": "Kitchen + Baths",
             "kcd_color": "BW",
             "kcd_style": "Brooklyn White",
             "drawer_type": "5-piece",
@@ -71,6 +72,7 @@ class ApiTests(unittest.TestCase):
         fetched = self.client.get(f"/api/projects/{project_id}")
         self.assertEqual(fetched.status_code, 200)
         self.assertGreaterEqual(len(fetched.json()["rooms"]), 1)
+        self.assertEqual(fetched.json()["project_scope"], "Kitchen + Baths")
 
         generation = self.client.post(f"/api/projects/{project_id}/generate-cd")
         self.assertEqual(generation.status_code, 200)
@@ -85,6 +87,7 @@ class ApiTests(unittest.TestCase):
         self.login()
         payload = {
             "address": "1 Test Ave",
+            "project_scope": "Laundry",
             "kcd_color": "OW",
             "kcd_style": "Oslo White",
             "drawer_type": "slab",
@@ -102,6 +105,7 @@ class ApiTests(unittest.TestCase):
         updated_room = updated.json()["rooms"][0]
         self.assertEqual(updated_room["label"], "Edited Kitchen")
         self.assertEqual(updated_room["walls"][0]["end"]["x"], 156)
+        self.assertEqual(created["project_scope"], "Laundry")
 
 
 if __name__ == "__main__":

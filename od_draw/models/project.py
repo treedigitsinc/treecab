@@ -47,5 +47,6 @@ class Project:
     crown_molding: str
     designer: str
     created_at: date
+    project_scope: str = "Kitchen"
     rooms: list[Room] = field(default_factory=list)
     sheets: list[Sheet] = field(default_factory=list)
