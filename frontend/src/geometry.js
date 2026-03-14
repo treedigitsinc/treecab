@@ -28,15 +28,20 @@ export function roomBounds(room) {
   return { minX, minY, maxX, maxY };
 }
 
-export function createView(room, width, height) {
+export function createView(room, width, height, camera = {}) {
   const bounds = roomBounds(room);
   const worldWidth = Math.max(bounds.maxX - bounds.minX, 1);
   const worldHeight = Math.max(bounds.maxY - bounds.minY, 1);
-  const scale = Math.min((width - PADDING * 2) / worldWidth, (height - PADDING * 2) / worldHeight);
-  const offsetX = (width - worldWidth * scale) / 2;
-  const offsetY = (height - worldHeight * scale) / 2;
+  const zoom = camera.zoom || 1;
+  const panX = camera.panX || 0;
+  const panY = camera.panY || 0;
+  const baseScale = Math.min((width - PADDING * 2) / worldWidth, (height - PADDING * 2) / worldHeight);
+  const scale = baseScale * zoom;
+  const offsetX = ((width - worldWidth * scale) / 2) + panX;
+  const offsetY = ((height - worldHeight * scale) / 2) + panY;
   return {
     bounds,
+    zoom,
     scale,
     worldToScreen(point) {
       return {

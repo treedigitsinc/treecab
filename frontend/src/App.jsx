@@ -21,7 +21,6 @@ import {
   getBaseCode,
   nearestWall,
   openingScreenGeometry,
-  polygonBounds,
   roomBounds,
   sampleArcPoints,
   wallLength,
@@ -40,6 +39,10 @@ const DEFAULT_METADATA = {
 };
 
 const SCOPE_OPTIONS = ["Kitchen", "Laundry", "Main Bath", "Bath", "Dining", "Kitchen + Baths", "Full Home"];
+const MIN_CANVAS_ZOOM = 0.65;
+const MAX_CANVAS_ZOOM = 5;
+const ZOOM_STEP = 1.14;
+const SNAP_INCREMENT = 0.5;
 
 function buildRoomPayload(room) {
   return {
@@ -285,7 +288,7 @@ function DemoWallPolygon({ polygon, stroke }) {
 }
 
 function OpeningSymbol({ opening, geometry, isSelected, onSelect, onContextMenu }) {
-  const jambStroke = isSelected ? "#b85635" : "#6f665d";
+  const jambStroke = isSelected ? "#2d6cdf" : "#5c6570";
   const lineWeight = opening.kind === "window" ? 1.2 : 1.4;
   const jambA = [
     geometry.start.x - geometry.normal.x * (geometry.thickness / 2),
@@ -365,6 +368,110 @@ function OpeningSymbol({ opening, geometry, isSelected, onSelect, onContextMenu 
   );
 }
 
+function snapWorldPoint(point, increment = SNAP_INCREMENT) {
+  if (!point) return null;
+  return {
+    x: Math.round(point.x / increment) * increment,
+    y: Math.round(point.y / increment) * increment,
+  };
+}
+
+function formatDraftValue(value) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "--";
+  return Number(value).toFixed(1).replace(/\.0$/, "");
+}
+
+function describeSelection(selected, room) {
+  if (!selected || !room) return "Nothing selected";
+  if (selected.kind === "wall") {
+    const wall = room.walls.find((item) => item.id === selected.id);
+    return wall ? `Wall ${wall.id}` : "Wall";
+  }
+  if (selected.kind === "opening") {
+    const opening = room.openings.find((item) => item.id === selected.id);
+    return opening ? `${opening.kind} ${opening.id}` : "Opening";
+  }
+  const cabinet = room.cabinets.find((item) => item.id === selected.id);
+  return cabinet ? `Cabinet ${cabinet.kcd_code}` : "Cabinet";
+}
+
+function DraftingGrid({ room, view }) {
+  const bounds = roomBounds(room);
+  const minorStep = view.scale >= 4 ? 6 : 12;
+  const majorEvery = 4;
+  const padding = minorStep * 2;
+  const minX = Math.floor((bounds.minX - padding) / minorStep) * minorStep;
+  const maxX = Math.ceil((bounds.maxX + padding) / minorStep) * minorStep;
+  const minY = Math.floor((bounds.minY - padding) / minorStep) * minorStep;
+  const maxY = Math.ceil((bounds.maxY + padding) / minorStep) * minorStep;
+  const lines = [];
+
+  let index = 0;
+  for (let x = minX; x <= maxX; x += minorStep) {
+    const start = view.worldToScreen({ x, y: minY });
+    const end = view.worldToScreen({ x, y: maxY });
+    const major = index % majorEvery === 0;
+    lines.push(
+      <Line
+        key={`grid-x-${x}`}
+        points={[start.x, start.y, end.x, end.y]}
+        stroke={major ? "#d6dde6" : "#ecf1f5"}
+        strokeWidth={major ? 1 : 0.65}
+        listening={false}
+      />,
+    );
+    index += 1;
+  }
+
+  index = 0;
+  for (let y = minY; y <= maxY; y += minorStep) {
+    const start = view.worldToScreen({ x: minX, y });
+    const end = view.worldToScreen({ x: maxX, y });
+    const major = index % majorEvery === 0;
+    lines.push(
+      <Line
+        key={`grid-y-${y}`}
+        points={[start.x, start.y, end.x, end.y]}
+        stroke={major ? "#d6dde6" : "#ecf1f5"}
+        strokeWidth={major ? 1 : 0.65}
+        listening={false}
+      />,
+    );
+    index += 1;
+  }
+
+  return <Group>{lines}</Group>;
+}
+
+function ViewCropBox({ room, view }) {
+  const bounds = roomBounds(room);
+  const padding = 18;
+  const topLeft = view.worldToScreen({ x: bounds.minX - padding, y: bounds.minY - padding });
+  const bottomRight = view.worldToScreen({ x: bounds.maxX + padding, y: bounds.maxY + padding });
+  return (
+    <Rect
+      x={Math.min(topLeft.x, bottomRight.x)}
+      y={Math.min(topLeft.y, bottomRight.y)}
+      width={Math.abs(bottomRight.x - topLeft.x)}
+      height={Math.abs(bottomRight.y - topLeft.y)}
+      stroke="#7e8896"
+      strokeWidth={1}
+      dash={[10, 8]}
+      listening={false}
+    />
+  );
+}
+
+function CursorCrosshair({ cursorScreen, stageSize }) {
+  if (!cursorScreen) return null;
+  return (
+    <Group listening={false}>
+      <Line points={[cursorScreen.x, 0, cursorScreen.x, stageSize.height]} stroke="#7d9fcb" strokeWidth={1} dash={[8, 8]} />
+      <Line points={[0, cursorScreen.y, stageSize.width, cursorScreen.y]} stroke="#7d9fcb" strokeWidth={1} dash={[8, 8]} />
+    </Group>
+  );
+}
+
 export default function App() {
   const [backend, setBackend] = useState("loading");
   const [catalog, setCatalog] = useState([]);
@@ -381,7 +488,11 @@ export default function App() {
   const [setupForm, setSetupForm] = useState({ projectName: "New Project", projectScope: "Kitchen" });
   const [contextMenu, setContextMenu] = useState(null);
   const [stageSize, setStageSize] = useState({ width: 960, height: 660 });
+  const [canvasCamera, setCanvasCamera] = useState({ zoom: 1, panX: 0, panY: 0 });
+  const [cursorScreen, setCursorScreen] = useState(null);
+  const [isPanning, setIsPanning] = useState(false);
   const stageHostRef = useRef(null);
+  const panPointerRef = useRef(null);
 
   const catalogMap = {};
   for (const entry of catalog) {
@@ -389,10 +500,13 @@ export default function App() {
   }
 
   const room = project?.rooms.find((item) => item.id === roomId) || null;
-  const view = room ? createView(room, stageSize.width, stageSize.height) : null;
+  const view = room ? createView(room, stageSize.width, stageSize.height, canvasCamera) : null;
+  const cursorWorld = room && view && cursorScreen ? snapWorldPoint(view.screenToWorld(cursorScreen)) : null;
+  const selectionDescription = describeSelection(selected, room);
   const currentWall = selected?.kind === "wall" ? room?.walls.find((item) => item.id === selected.id) : null;
   const currentOpening = selected?.kind === "opening" ? room?.openings.find((item) => item.id === selected.id) : null;
   const currentCabinet = selected?.kind === "cabinet" ? room?.cabinets.find((item) => item.id === selected.id) : null;
+  const roomTag = room ? `${String(room.room_number).padStart(2, "0")} ${room.label}` : "";
 
   useEffect(() => {
     if (!stageHostRef.current) return undefined;
@@ -430,8 +544,49 @@ export default function App() {
     boot();
   }, []);
 
+  useEffect(() => {
+    panPointerRef.current = null;
+    setIsPanning(false);
+    setCursorScreen(null);
+    setCanvasCamera({ zoom: 1, panX: 0, panY: 0 });
+  }, [project?.id, roomId]);
+
   function closeContextMenu() {
     setContextMenu(null);
+  }
+
+  function resetCanvasView() {
+    panPointerRef.current = null;
+    setIsPanning(false);
+    setCursorScreen(null);
+    setCanvasCamera({ zoom: 1, panX: 0, panY: 0 });
+  }
+
+  function setCanvasZoom(nextZoom, pointer = null) {
+    if (!room) return;
+    setCanvasCamera((current) => {
+      const zoom = clamp(nextZoom, MIN_CANVAS_ZOOM, MAX_CANVAS_ZOOM);
+      if (!pointer) {
+        return { ...current, zoom };
+      }
+      const currentView = createView(room, stageSize.width, stageSize.height, current);
+      const worldPoint = currentView.screenToWorld(pointer);
+      const nextView = createView(room, stageSize.width, stageSize.height, { ...current, zoom });
+      const nextScreen = nextView.worldToScreen(worldPoint);
+      return {
+        zoom,
+        panX: current.panX + (pointer.x - nextScreen.x),
+        panY: current.panY + (pointer.y - nextScreen.y),
+      };
+    });
+  }
+
+  function panCanvasBy(dx, dy) {
+    setCanvasCamera((current) => ({
+      ...current,
+      panX: current.panX + dx,
+      panY: current.panY + dy,
+    }));
   }
 
   function openContextMenu(screenPoint, title, items) {
@@ -550,15 +705,17 @@ export default function App() {
 
   function addWallAtPoint(worldPoint, status) {
     if (!room) return;
+    const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
     mutateRoom((target) => {
-      target.walls.push(newWallFromPoint(worldPoint, status, target));
+      target.walls.push(newWallFromPoint(snappedPoint, status, target));
     });
     setStatus("Wall added. Save room geometry to persist.");
   }
 
   function addOpeningAtPoint(openingKind, width, worldPoint, forcedWallId = null) {
     if (!room) return;
-    const targetWall = forcedWallId ? { wall: room.walls.find((item) => item.id === forcedWallId), offset: 12 } : nearestWall(worldPoint, room);
+    const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
+    const targetWall = forcedWallId ? { wall: room.walls.find((item) => item.id === forcedWallId), offset: 12 } : nearestWall(snappedPoint, room);
     if (!targetWall?.wall) {
       setStatus("Right-click closer to a wall to place an opening.");
       return;
@@ -587,7 +744,8 @@ export default function App() {
       setStatus("Save room geometry before placing cabinets.");
       return;
     }
-    const targetWall = forcedWallId ? { wall: room.walls.find((item) => item.id === forcedWallId), offset: 18 } : nearestWall(worldPoint, room);
+    const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
+    const targetWall = forcedWallId ? { wall: room.walls.find((item) => item.id === forcedWallId), offset: 18 } : nearestWall(snappedPoint, room);
     if (!targetWall?.wall) {
       setStatus("Right-click closer to a wall to place a cabinet.");
       return;
@@ -728,6 +886,47 @@ export default function App() {
     ]);
   }
 
+  function stopPanning() {
+    panPointerRef.current = null;
+    setIsPanning(false);
+  }
+
+  function handleStageMouseDown(event) {
+    closeContextMenu();
+    const stage = event.target.getStage();
+    const pointer = stage?.getPointerPosition();
+    if (event.evt.button === 1 && pointer) {
+      event.evt.preventDefault();
+      panPointerRef.current = pointer;
+      setIsPanning(true);
+      return;
+    }
+    if (event.target === stage) {
+      setSelected(null);
+    }
+  }
+
+  function handleStageMouseMove(event) {
+    const stage = event.target.getStage();
+    const pointer = stage?.getPointerPosition();
+    if (!pointer) return;
+    setCursorScreen(pointer);
+    if (!panPointerRef.current) return;
+    const deltaX = pointer.x - panPointerRef.current.x;
+    const deltaY = pointer.y - panPointerRef.current.y;
+    panPointerRef.current = pointer;
+    panCanvasBy(deltaX, deltaY);
+  }
+
+  function handleStageWheel(event) {
+    event.evt.preventDefault();
+    const stage = event.target.getStage();
+    const pointer = stage?.getPointerPosition();
+    if (!pointer) return;
+    const factor = event.evt.deltaY > 0 ? 1 / ZOOM_STEP : ZOOM_STEP;
+    setCanvasZoom(canvasCamera.zoom * factor, pointer);
+  }
+
   if (!project) {
     return (
       <div className="app-shell">
@@ -774,6 +973,7 @@ export default function App() {
             type="button"
             className="secondary"
             onClick={() => {
+              resetCanvasView();
               setProject(null);
               setGeneration(null);
               setSelected(null);
@@ -877,36 +1077,63 @@ export default function App() {
             <div className="section-head">
               <div>
                 <h2>Plan Canvas</h2>
-                <p className="hint">Right-click on empty space to add. Right-click an element to edit or delete it.</p>
+                <p className="hint">Wheel to zoom, middle mouse to pan, right-click to place or edit elements.</p>
               </div>
               <span className={roomDirty ? "dirty-flag active" : "dirty-flag"}>{roomDirty ? "Unsaved room changes" : "Room synced"}</span>
             </div>
-            <div ref={stageHostRef} className="stage-host">
+            <div ref={stageHostRef} className={`stage-host ${isPanning ? "is-panning" : ""}`}>
+              <div className="canvas-toolbar">
+                <div className="canvas-toolbar-group">
+                  <span className="canvas-chip canvas-chip-strong">Level 1</span>
+                  <span className="canvas-chip">{roomTag}</span>
+                  <span className="canvas-chip">{isPanning ? "Panning view" : "Drafting view"}</span>
+                </div>
+                <div className="canvas-toolbar-group">
+                  <button type="button" className="canvas-tool" onClick={() => setCanvasZoom(canvasCamera.zoom / ZOOM_STEP)}>
+                    -
+                  </button>
+                  <button type="button" className="canvas-tool" onClick={() => setCanvasZoom(1)}>
+                    100%
+                  </button>
+                  <button type="button" className="canvas-tool" onClick={() => setCanvasZoom(canvasCamera.zoom * ZOOM_STEP)}>
+                    +
+                  </button>
+                  <button type="button" className="canvas-tool" onClick={resetCanvasView}>
+                    Fit
+                  </button>
+                </div>
+              </div>
               <ContextMenu menu={contextMenu} />
               {room && view ? (
                 <Stage
                   width={stageSize.width}
                   height={stageSize.height}
-                  onMouseDown={(event) => {
-                    closeContextMenu();
-                    if (event.target === event.target.getStage()) {
-                      setSelected(null);
-                    }
+                  onMouseDown={handleStageMouseDown}
+                  onMouseMove={handleStageMouseMove}
+                  onMouseUp={stopPanning}
+                  onMouseLeave={() => {
+                    setCursorScreen(null);
+                    stopPanning();
                   }}
+                  onWheel={handleStageWheel}
                   onContextMenu={(event) => {
                     event.evt.preventDefault();
                     const pointer = event.target.getStage().getPointerPosition();
                     if (!pointer || !view) return;
-                    buildCanvasMenu(view.screenToWorld(pointer), pointer);
+                    buildCanvasMenu(snapWorldPoint(view.screenToWorld(pointer)) || view.screenToWorld(pointer), pointer);
                   }}
                 >
                   <Layer>
-                    <Rect x={0} y={0} width={stageSize.width} height={stageSize.height} fill="#fffdf9" />
+                    <Rect x={0} y={0} width={stageSize.width} height={stageSize.height} fill="#bcc4cd" />
+                    <Rect x={18} y={18} width={stageSize.width - 36} height={stageSize.height - 36} fill="#fbfcfe" stroke="#7d8793" strokeWidth={1.2} shadowColor="rgba(20, 30, 40, 0.18)" shadowBlur={18} shadowOffsetY={8} />
+                    <DraftingGrid room={room} view={view} />
+                    <ViewCropBox room={room} view={view} />
+                    <CursorCrosshair cursorScreen={cursorScreen} stageSize={stageSize} />
                     {room.walls.map((wall) => {
                       const polygon = wallPolygon(wall, room, view);
                       const isSelected = selected?.kind === "wall" && selected.id === wall.id;
-                      const stroke = isSelected ? "#b85635" : "#1f1a15";
-                      const fill = wall.status === "new" ? "#9da3a7" : "#fffdf9";
+                      const stroke = isSelected ? "#2d6cdf" : "#262b33";
+                      const fill = wall.status === "new" ? "#8e99a5" : "#fbfcfe";
                       return (
                         <Group
                           key={wall.id}
@@ -915,10 +1142,10 @@ export default function App() {
                             event.evt.preventDefault();
                             const pointer = event.target.getStage().getPointerPosition();
                             if (!pointer || !view) return;
-                            buildElementMenu("wall", wall.id, view.screenToWorld(pointer), pointer);
+                            buildElementMenu("wall", wall.id, snapWorldPoint(view.screenToWorld(pointer)) || view.screenToWorld(pointer), pointer);
                           }}
                         >
-                          {wall.status === "to_remove" ? <DemoWallPolygon polygon={polygon} stroke={stroke} /> : <Line points={polygon.points} closed fill={fill} stroke={stroke} strokeWidth={isSelected ? 1.8 : 1.2} />}
+                          {wall.status === "to_remove" ? <DemoWallPolygon polygon={polygon} stroke={stroke} /> : <Line points={polygon.points} closed fill={fill} stroke={stroke} strokeWidth={isSelected ? 2 : 1.2} />}
                         </Group>
                       );
                     })}
@@ -935,7 +1162,7 @@ export default function App() {
                           onContextMenu={(event) => {
                             const pointer = event.target.getStage().getPointerPosition();
                             if (!pointer || !view) return;
-                            buildElementMenu("opening", opening.id, view.screenToWorld(pointer), pointer);
+                            buildElementMenu("opening", opening.id, snapWorldPoint(view.screenToWorld(pointer)) || view.screenToWorld(pointer), pointer);
                           }}
                         />
                       );
@@ -952,11 +1179,11 @@ export default function App() {
                             event.evt.preventDefault();
                             const pointer = event.target.getStage().getPointerPosition();
                             if (!pointer || !view) return;
-                            buildElementMenu("cabinet", cabinet.id, view.screenToWorld(pointer), pointer);
+                            buildElementMenu("cabinet", cabinet.id, snapWorldPoint(view.screenToWorld(pointer)) || view.screenToWorld(pointer), pointer);
                           }}
                         >
-                          <Rect x={rect.x} y={rect.y} width={rect.width} height={rect.height} fill={cabinet.is_upper ? "#fbf6ee" : "#ffffff"} stroke={isSelected ? "#b85635" : "#221c16"} strokeWidth={isSelected ? 2.2 : 1.2} dash={cabinet.is_upper ? [7, 4] : []} />
-                          <Text x={rect.x + 4} y={rect.y + rect.height / 2 - 7} text={cabinet.kcd_code} fontSize={10} fill="#221c16" width={Math.max(rect.width - 8, 44)} align="center" />
+                          <Rect x={rect.x} y={rect.y} width={rect.width} height={rect.height} fill={cabinet.is_upper ? "#f4f7fb" : "#ffffff"} stroke={isSelected ? "#2d6cdf" : "#20252c"} strokeWidth={isSelected ? 2.2 : 1.2} dash={cabinet.is_upper ? [7, 4] : []} />
+                          <Text x={rect.x + 4} y={rect.y + rect.height / 2 - 7} text={cabinet.kcd_code} fontSize={10} fill="#20252c" width={Math.max(rect.width - 8, 44)} align="center" />
                         </Group>
                       );
                     })}
@@ -965,6 +1192,12 @@ export default function App() {
               ) : (
                 <div className="empty canvas-empty">No room loaded.</div>
               )}
+              <div className="canvas-statusbar">
+                <span>Zoom {Math.round(canvasCamera.zoom * 100)}%</span>
+                <span>X {formatDraftValue(cursorWorld?.x)}</span>
+                <span>Y {formatDraftValue(cursorWorld?.y)}</span>
+                <span>{selectionDescription}</span>
+              </div>
             </div>
           </section>
 

@@ -16,7 +16,7 @@ test("project setup opens the canvas and uses right-click actions", async ({ pag
   await page.getByRole("button", { name: "Create Project & Open Canvas" }).click();
 
   await expect(page.getByRole("heading", { name: "Plan Canvas" })).toBeVisible();
-  await expect(page.getByText("Right-click on empty space to add.")).toBeVisible();
+  await expect(page.getByText("Wheel to zoom, middle mouse to pan")).toBeVisible();
 
   const canvas = page.locator(".konvajs-content canvas").first();
   await expect(canvas).toBeVisible();
