@@ -27,4 +27,12 @@ test("project setup opens the canvas and uses right-click actions", async ({ pag
 
   await page.getByRole("button", { name: "Add Existing Wall" }).click();
   await expect(page.getByText("Wall added. Save room geometry to persist.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Save Room" }).click();
+  await expect(page.getByText("Room geometry saved.")).toBeVisible();
+
+  await canvas.click({ button: "right", position: { x: 220, y: 180 } });
+  await expect(page.getByRole("button", { name: /Place / })).toBeVisible();
+  await page.getByRole("button", { name: /Place / }).click();
+  await expect(page.getByText(/placed\./)).toBeVisible();
 });

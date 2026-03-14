@@ -293,6 +293,7 @@ def build_blank_master_project(payload: MasterProjectCreatePayload) -> MasterPro
     )
     return MasterProject(
         id=project_id,
+        project_name=payload.project_name or payload.address,
         address=payload.address,
         project_type=payload.project_type,
         kcd_color=payload.kcd_color,
@@ -325,6 +326,12 @@ def save_project(project: Project) -> Project:
     prepare_project(project)
     build_default_sheets(project)
     store.save(project)
+    return project
+
+
+def prepare_project_for_output(project: Project) -> Project:
+    prepare_project(project)
+    build_default_sheets(project)
     return project
 
 
@@ -680,7 +687,7 @@ def create_app(
 
     @app.get("/api/projects/{project_id}/preview/{sheet_number}.svg")
     def preview_sheet(project_id: str, sheet_number: str):
-        project = save_project(get_project_or_404(project_id))
+        project = prepare_project_for_output(get_project_or_404(project_id))
         generate_outputs(project)
         path = store.output_dir(project_id) / f"{sheet_number}.svg"
         if not path.exists():
@@ -689,7 +696,7 @@ def create_app(
 
     @app.get("/api/projects/{project_id}/download/{filename}")
     def download_output(project_id: str, filename: str):
-        project = save_project(get_project_or_404(project_id))
+        project = prepare_project_for_output(get_project_or_404(project_id))
         generate_outputs(project)
         path = store.output_dir(project_id) / filename
         if not path.exists():
@@ -705,7 +712,7 @@ def create_app(
 
     @app.get("/api/projects/{project_id}/export-tsv")
     def export_tsv(project_id: str):
-        project = save_project(get_project_or_404(project_id))
+        project = prepare_project_for_output(get_project_or_404(project_id))
         generate_outputs(project)
         filename = f"{project.id}.tsv"
         path = store.output_dir(project_id) / filename
@@ -739,6 +746,7 @@ def create_app(
             project = build_sample_master_project()
             if payload.project_id:
                 project.id = payload.project_id
+            project.project_name = payload.project_name or payload.address
             project.address = payload.address
             project.project_type = payload.project_type
             project.kcd_color = payload.kcd_color

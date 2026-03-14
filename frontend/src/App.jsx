@@ -479,6 +479,7 @@ export default function App() {
   const [project, setProject] = useState(null);
   const [roomId, setRoomId] = useState(null);
   const [generation, setGeneration] = useState(null);
+  const [previewNonce, setPreviewNonce] = useState(0);
   const [status, setStatus] = useState("Loading...");
   const [roomDirty, setRoomDirty] = useState(false);
   const [selected, setSelected] = useState(null);
@@ -553,6 +554,11 @@ export default function App() {
 
   function closeContextMenu() {
     setContextMenu(null);
+  }
+
+  function updateGeneration(nextGeneration) {
+    setGeneration(nextGeneration);
+    setPreviewNonce((current) => current + 1);
   }
 
   function resetCanvasView() {
@@ -635,7 +641,7 @@ export default function App() {
     try {
       setStatus("Loading project...");
       const loaded = await refreshProject(nextId, false);
-      setGeneration(await generateDrawingSet(loaded.id));
+      updateGeneration(await generateDrawingSet(loaded.id));
       setStatus("Project loaded.");
       setSelected(null);
     } catch (error) {
@@ -656,7 +662,7 @@ export default function App() {
       setProjects((current) => [created, ...current.filter((item) => item.id !== created.id)].sort((a, b) => a.id.localeCompare(b.id)));
       setExistingProjectId(created.id);
       setRoomId(created.rooms[0]?.id || null);
-      setGeneration(await generateDrawingSet(created.id));
+      updateGeneration(await generateDrawingSet(created.id));
       setRoomDirty(false);
       setSelected(null);
       setStatus("Project created. Right-click on the canvas to add elements.");
@@ -696,7 +702,7 @@ export default function App() {
     try {
       setStatus("Generating drawing set...");
       const response = await generateDrawingSet(project.id);
-      setGeneration(response);
+      updateGeneration(response);
       setStatus(`Generated ${Object.keys(response.sheet_urls).length} sheets.`);
     } catch (error) {
       setStatus(error.message);
@@ -1325,7 +1331,7 @@ export default function App() {
             </div>
             <p className="status-line">{status}</p>
             {generation?.sheet_urls ? (
-              <iframe title="Sheet preview" src={`${generation.sheet_urls["A-02"] || Object.values(generation.sheet_urls)[0]}?t=${Date.now()}`} />
+              <iframe title="Sheet preview" src={`${generation.sheet_urls["A-02"] || Object.values(generation.sheet_urls)[0]}?v=${previewNonce}`} />
             ) : (
               <div className="empty preview-empty">Generate a drawing set to load the preview.</div>
             )}
