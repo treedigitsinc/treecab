@@ -1,5 +1,6 @@
 const PADDING = 64;
 const ENDPOINT_EPSILON = 0.01;
+const DRAFT_AXIS_RATIO = 1.75;
 
 export function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -7,6 +8,10 @@ export function clamp(value, min, max) {
 
 export function wallLength(wall) {
   return Math.hypot(wall.end.x - wall.start.x, wall.end.y - wall.start.y);
+}
+
+export function pointDistance(first, second) {
+  return Math.hypot((second?.x || 0) - (first?.x || 0), (second?.y || 0) - (first?.y || 0));
 }
 
 export function pointAtWallOffset(wall, offset) {
@@ -82,6 +87,43 @@ export function projectPointToWall(point, wall) {
     offset: ratio * wallLength(wall),
     distance: Math.hypot(projected.x - point.x, projected.y - point.y),
   };
+}
+
+export function alignDraftPoint(point, anchor, axisRatio = DRAFT_AXIS_RATIO) {
+  if (!anchor) return point;
+  const dx = point.x - anchor.x;
+  const dy = point.y - anchor.y;
+  if (Math.abs(dx) >= Math.abs(dy) * axisRatio) {
+    return { x: point.x, y: anchor.y };
+  }
+  if (Math.abs(dy) >= Math.abs(dx) * axisRatio) {
+    return { x: anchor.x, y: point.y };
+  }
+  return point;
+}
+
+export function nearestWallEndpoint(point, room, excludedWallId = null) {
+  let best = null;
+  for (const wall of room.walls) {
+    if (wall.id === excludedWallId) continue;
+    for (const endpointKey of ["start", "end"]) {
+      const candidatePoint = wall[endpointKey];
+      const distance = pointDistance(point, candidatePoint);
+      if (!best || distance < best.distance) {
+        best = { wall, endpointKey, point: candidatePoint, distance };
+      }
+    }
+  }
+  return best;
+}
+
+export function snapWallPoint(point, anchor, room, excludedWallId = null, joinDistance = 8) {
+  const aligned = alignDraftPoint(point, anchor);
+  const endpoint = nearestWallEndpoint(aligned, room, excludedWallId);
+  if (endpoint && endpoint.distance <= joinDistance) {
+    return { x: endpoint.point.x, y: endpoint.point.y };
+  }
+  return aligned;
 }
 
 export function nearestWall(point, room) {

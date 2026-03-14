@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Group, Layer, Line, Rect, Stage, Text } from "react-konva";
+import { Circle, Group, Layer, Line, Rect, Stage, Text } from "react-konva";
 
 import {
   addCabinet,
@@ -20,9 +20,12 @@ import {
   createView,
   getBaseCode,
   nearestWall,
+  pointDistance,
   openingScreenGeometry,
+  projectPointToWall,
   roomBounds,
   sampleArcPoints,
+  snapWallPoint,
   wallLength,
   wallPolygon,
 } from "./geometry";
@@ -43,6 +46,8 @@ const MIN_CANVAS_ZOOM = 0.65;
 const MAX_CANVAS_ZOOM = 5;
 const ZOOM_STEP = 1.14;
 const SNAP_INCREMENT = 0.5;
+const WALL_DRAFT_MIN_LENGTH = 12;
+const OPENING_REHOST_DISTANCE = 18;
 
 function buildRoomPayload(room) {
   return {
@@ -72,16 +77,33 @@ function buildRoomPayload(room) {
   };
 }
 
-function newWallFromPoint(point, status, room) {
-  const bounds = roomBounds(room);
-  const originX = Math.max(point.x, bounds.minX - 24);
-  const originY = Math.max(point.y, bounds.minY - 24);
+function clampOpeningPlacement(width, wall, offset) {
+  return clamp(offset, 0, Math.max(wallLength(wall) - width, 0));
+}
+
+function resolveOpeningPlacement(opening, worldPoint, room) {
+  const nearest = nearestWall(worldPoint, room);
+  const currentWall = room.walls.find((wall) => wall.id === opening.wall_id);
+  if (!nearest?.wall && !currentWall) return null;
+
+  if (nearest?.wall && nearest.distance <= OPENING_REHOST_DISTANCE) {
+    return {
+      wall_id: nearest.wall.id,
+      position_along_wall: clampOpeningPlacement(opening.width, nearest.wall, nearest.offset - opening.width / 2),
+    };
+  }
+
+  if (!currentWall) {
+    return {
+      wall_id: nearest.wall.id,
+      position_along_wall: clampOpeningPlacement(opening.width, nearest.wall, nearest.offset - opening.width / 2),
+    };
+  }
+
+  const projected = projectPointToWall(worldPoint, currentWall);
   return {
-    id: `wall-${Date.now()}`,
-    start: { x: Math.round(originX), y: Math.round(originY) },
-    end: { x: Math.round(originX + 96), y: Math.round(originY) },
-    thickness: 4.5,
-    status,
+    wall_id: currentWall.id,
+    position_along_wall: clampOpeningPlacement(opening.width, currentWall, projected.offset - opening.width / 2),
   };
 }
 
@@ -287,7 +309,7 @@ function DemoWallPolygon({ polygon, stroke }) {
   );
 }
 
-function OpeningSymbol({ opening, geometry, isSelected, onSelect, onContextMenu }) {
+function OpeningSymbol({ opening, geometry, isSelected, onSelect, onContextMenu, onDragStart }) {
   const jambStroke = isSelected ? "#2d6cdf" : "#5c6570";
   const lineWeight = opening.kind === "window" ? 1.2 : 1.4;
   const jambA = [
@@ -351,7 +373,10 @@ function OpeningSymbol({ opening, geometry, isSelected, onSelect, onContextMenu 
 
   return (
     <Group
-      onMouseDown={onSelect}
+      onMouseDown={(event) => {
+        onSelect(event);
+        onDragStart?.(event);
+      }}
       onContextMenu={(event) => {
         event.evt.preventDefault();
         onContextMenu(event);
@@ -492,8 +517,11 @@ export default function App() {
   const [canvasCamera, setCanvasCamera] = useState({ zoom: 1, panX: 0, panY: 0 });
   const [cursorScreen, setCursorScreen] = useState(null);
   const [isPanning, setIsPanning] = useState(false);
+  const [draftMode, setDraftMode] = useState(null);
+  const [dragInteraction, setDragInteraction] = useState(null);
   const stageHostRef = useRef(null);
   const panPointerRef = useRef(null);
+  const dragMovedRef = useRef(false);
 
   const catalogMap = {};
   for (const entry of catalog) {
@@ -507,7 +535,12 @@ export default function App() {
   const currentWall = selected?.kind === "wall" ? room?.walls.find((item) => item.id === selected.id) : null;
   const currentOpening = selected?.kind === "opening" ? room?.openings.find((item) => item.id === selected.id) : null;
   const currentCabinet = selected?.kind === "cabinet" ? room?.cabinets.find((item) => item.id === selected.id) : null;
+  const currentOpeningGeometry = currentOpening && view ? openingScreenGeometry(currentOpening, room, view) : null;
   const roomTag = room ? `${String(room.room_number).padStart(2, "0")} ${room.label}` : "";
+  const canvasModeLabel = draftMode ? "Wall sketch" : isPanning ? "Panning view" : dragInteraction ? "Editing selection" : "Drafting view";
+  const draftEndPoint = room && draftMode?.kind === "wall" && cursorWorld
+    ? snapWallPoint(cursorWorld, draftMode.start, room)
+    : null;
 
   useEffect(() => {
     if (!stageHostRef.current) return undefined;
@@ -547,14 +580,34 @@ export default function App() {
 
   useEffect(() => {
     panPointerRef.current = null;
+    dragMovedRef.current = false;
     setIsPanning(false);
     setCursorScreen(null);
     setCanvasCamera({ zoom: 1, panX: 0, panY: 0 });
+    setDraftMode(null);
+    setDragInteraction(null);
   }, [project?.id, roomId]);
 
   function closeContextMenu() {
     setContextMenu(null);
   }
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key !== "Escape") return;
+      closeContextMenu();
+      if (draftMode) {
+        setDraftMode(null);
+        setStatus("Wall sketch canceled.");
+      }
+      if (dragInteraction) {
+        dragMovedRef.current = false;
+        setDragInteraction(null);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [draftMode, dragInteraction]);
 
   function updateGeneration(nextGeneration) {
     setGeneration(nextGeneration);
@@ -563,9 +616,80 @@ export default function App() {
 
   function resetCanvasView() {
     panPointerRef.current = null;
+    dragMovedRef.current = false;
     setIsPanning(false);
     setCursorScreen(null);
     setCanvasCamera({ zoom: 1, panX: 0, panY: 0 });
+  }
+
+  function beginWallDraft(worldPoint, status) {
+    if (!room) return;
+    const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
+    const start = snapWallPoint(snappedPoint, null, room);
+    setDraftMode({ kind: "wall", status, start });
+    setSelected(null);
+    setStatus("Wall sketch started. Click the plan to place the end point. Endpoints snap together automatically.");
+  }
+
+  function finalizeWallDraft(worldPoint) {
+    if (!room || !draftMode || draftMode.kind !== "wall") return;
+    const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
+    const end = snapWallPoint(snappedPoint, draftMode.start, room);
+    if (pointDistance(draftMode.start, end) < WALL_DRAFT_MIN_LENGTH) {
+      setStatus("Stretch the wall farther before placing it.");
+      return;
+    }
+    const wallId = `wall-${Date.now()}`;
+    mutateRoom((target) => {
+      target.walls.push({
+        id: wallId,
+        start: { x: draftMode.start.x, y: draftMode.start.y },
+        end: { x: end.x, y: end.y },
+        thickness: 4.5,
+        status: draftMode.status,
+      });
+    });
+    setDraftMode(null);
+    setSelected({ kind: "wall", id: wallId });
+    setStatus("Wall drafted. Drag the blue grips to tune or join corners.");
+  }
+
+  function updateWallChildren(target, wall) {
+    const nextWallLength = wallLength(wall);
+    for (const opening of target.openings.filter((item) => item.wall_id === wall.id)) {
+      opening.position_along_wall = clamp(opening.position_along_wall, 0, Math.max(nextWallLength - opening.width, 0));
+    }
+    for (const cabinet of target.cabinets.filter((item) => item.wall_id === wall.id)) {
+      const entry = catalogMap[getBaseCode(cabinet.kcd_code)];
+      if (!entry) continue;
+      cabinet.offset_from_wall_start = clamp(cabinet.offset_from_wall_start, 0, Math.max(nextWallLength - entry.width, 0));
+    }
+  }
+
+  function moveWallEndpoint(wallId, endpointKey, worldPoint) {
+    mutateRoom((target) => {
+      const wall = target.walls.find((item) => item.id === wallId);
+      if (!wall) return;
+      const anchorKey = endpointKey === "start" ? "end" : "start";
+      const anchor = wall[anchorKey];
+      const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
+      const nextPoint = snapWallPoint(snappedPoint, anchor, target, wall.id);
+      if (pointDistance(anchor, nextPoint) < WALL_DRAFT_MIN_LENGTH) return;
+      wall[endpointKey] = nextPoint;
+      updateWallChildren(target, wall);
+    });
+  }
+
+  function moveOpening(openingId, worldPoint) {
+    mutateRoom((target) => {
+      const opening = target.openings.find((item) => item.id === openingId);
+      if (!opening) return;
+      const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
+      const placement = resolveOpeningPlacement(opening, snappedPoint, target);
+      if (!placement) return;
+      opening.wall_id = placement.wall_id;
+      opening.position_along_wall = placement.position_along_wall;
+    });
   }
 
   function setCanvasZoom(nextZoom, pointer = null) {
@@ -710,12 +834,7 @@ export default function App() {
   }
 
   function addWallAtPoint(worldPoint, status) {
-    if (!room) return;
-    const snappedPoint = snapWorldPoint(worldPoint) || worldPoint;
-    mutateRoom((target) => {
-      target.walls.push(newWallFromPoint(snappedPoint, status, target));
-    });
-    setStatus("Wall added. Save room geometry to persist.");
+    beginWallDraft(worldPoint, status);
   }
 
   function addOpeningAtPoint(openingKind, width, worldPoint, forcedWallId = null) {
@@ -785,6 +904,9 @@ export default function App() {
       const opening = target.openings.find((item) => item.id === selected.id);
       if (!opening) return;
       Object.assign(opening, changes);
+      const wall = target.walls.find((item) => item.id === opening.wall_id);
+      if (!wall) return;
+      opening.position_along_wall = clampOpeningPlacement(opening.width, wall, opening.position_along_wall);
     });
   }
 
@@ -794,6 +916,7 @@ export default function App() {
       const wall = target.walls.find((item) => item.id === selected.id);
       if (!wall) return;
       Object.assign(wall, changes);
+      updateWallChildren(target, wall);
     });
   }
 
@@ -847,9 +970,9 @@ export default function App() {
 
   function buildCanvasMenu(worldPoint, screenPoint) {
     const items = [
-      { label: "Add Existing Wall", onSelect: () => addWallAtPoint(worldPoint, "existing") },
-      { label: "Add New Wall", onSelect: () => addWallAtPoint(worldPoint, "new") },
-      { label: "Add Demo Wall", onSelect: () => addWallAtPoint(worldPoint, "to_remove") },
+      { label: "Sketch Existing Wall", onSelect: () => addWallAtPoint(worldPoint, "existing") },
+      { label: "Sketch New Wall", onSelect: () => addWallAtPoint(worldPoint, "new") },
+      { label: "Sketch Demo Wall", onSelect: () => addWallAtPoint(worldPoint, "to_remove") },
     ];
     if (room?.walls.length) {
       items.push(
@@ -892,7 +1015,30 @@ export default function App() {
     ]);
   }
 
+  function startWallEndpointDrag(event, wallId, endpointKey) {
+    if (event.evt.button !== 0) return;
+    event.cancelBubble = true;
+    closeContextMenu();
+    dragMovedRef.current = false;
+    setSelected({ kind: "wall", id: wallId });
+    setDragInteraction({ type: "wall-endpoint", wallId, endpointKey });
+  }
+
+  function startOpeningDrag(event, openingId) {
+    if (event.evt.button !== 0) return;
+    event.cancelBubble = true;
+    closeContextMenu();
+    dragMovedRef.current = false;
+    setSelected({ kind: "opening", id: openingId });
+    setDragInteraction({ type: "opening", openingId });
+  }
+
   function stopPanning() {
+    if (dragInteraction && dragMovedRef.current) {
+      setStatus(dragInteraction.type === "opening" ? "Opening moved. Save room geometry to persist." : "Wall updated. Save room geometry to persist.");
+    }
+    dragMovedRef.current = false;
+    setDragInteraction(null);
     panPointerRef.current = null;
     setIsPanning(false);
   }
@@ -901,6 +1047,11 @@ export default function App() {
     closeContextMenu();
     const stage = event.target.getStage();
     const pointer = stage?.getPointerPosition();
+    if (draftMode && pointer && event.evt.button === 0) {
+      event.evt.preventDefault();
+      finalizeWallDraft(view.screenToWorld(pointer));
+      return;
+    }
     if (event.evt.button === 1 && pointer) {
       event.evt.preventDefault();
       panPointerRef.current = pointer;
@@ -917,6 +1068,17 @@ export default function App() {
     const pointer = stage?.getPointerPosition();
     if (!pointer) return;
     setCursorScreen(pointer);
+    if (dragInteraction && view) {
+      const worldPoint = view.screenToWorld(pointer);
+      if (dragInteraction.type === "wall-endpoint") {
+        moveWallEndpoint(dragInteraction.wallId, dragInteraction.endpointKey, worldPoint);
+      }
+      if (dragInteraction.type === "opening") {
+        moveOpening(dragInteraction.openingId, worldPoint);
+      }
+      dragMovedRef.current = true;
+      return;
+    }
     if (!panPointerRef.current) return;
     const deltaX = pointer.x - panPointerRef.current.x;
     const deltaY = pointer.y - panPointerRef.current.y;
@@ -1056,10 +1218,10 @@ export default function App() {
           <section className="panel">
             <div className="section-head">
               <h2>Canvas Actions</h2>
-              <span className="hint">Right-click to place</span>
+              <span className="hint">Right-click to sketch</span>
             </div>
             <div className="stack">
-              <p className="hint">Right-click on the plan to add walls, openings, or cabinetry. Right-click an existing element for contextual actions.</p>
+              <p className="hint">Right-click on the plan to sketch walls or place elements. Drag blue wall grips to join corners and drag openings to slide them within walls.</p>
               <label>
                 Cabinet Preset
                 <select value={catalogCode} onChange={(event) => setCatalogCode(event.target.value)}>
@@ -1083,16 +1245,16 @@ export default function App() {
             <div className="section-head">
               <div>
                 <h2>Plan Canvas</h2>
-                <p className="hint">Wheel to zoom, middle mouse to pan, right-click to place or edit elements.</p>
+                <p className="hint">Wheel to zoom, middle mouse to pan, right-click to sketch/place, and drag wall grips or openings to refine the plan.</p>
               </div>
               <span className={roomDirty ? "dirty-flag active" : "dirty-flag"}>{roomDirty ? "Unsaved room changes" : "Room synced"}</span>
             </div>
-            <div ref={stageHostRef} className={`stage-host ${isPanning ? "is-panning" : ""}`}>
+            <div ref={stageHostRef} className={`stage-host ${isPanning ? "is-panning" : ""} ${draftMode ? "is-drafting" : ""}`}>
               <div className="canvas-toolbar">
                 <div className="canvas-toolbar-group">
                   <span className="canvas-chip canvas-chip-strong">Level 1</span>
                   <span className="canvas-chip">{roomTag}</span>
-                  <span className="canvas-chip">{isPanning ? "Panning view" : "Drafting view"}</span>
+                  <span className="canvas-chip">{canvasModeLabel}</span>
                 </div>
                 <div className="canvas-toolbar-group">
                   <button type="button" className="canvas-tool" onClick={() => setCanvasZoom(canvasCamera.zoom / ZOOM_STEP)}>
@@ -1126,6 +1288,19 @@ export default function App() {
                     event.evt.preventDefault();
                     const pointer = event.target.getStage().getPointerPosition();
                     if (!pointer || !view) return;
+                    if (draftMode) {
+                      openContextMenu(pointer, "Wall Sketch", [
+                        { label: "Finish Wall Here", onSelect: () => finalizeWallDraft(view.screenToWorld(pointer)) },
+                        {
+                          label: "Cancel Sketch",
+                          onSelect: () => {
+                            setDraftMode(null);
+                            setStatus("Wall sketch canceled.");
+                          },
+                        },
+                      ]);
+                      return;
+                    }
                     buildCanvasMenu(snapWorldPoint(view.screenToWorld(pointer)) || view.screenToWorld(pointer), pointer);
                   }}
                 >
@@ -1135,6 +1310,20 @@ export default function App() {
                     <DraftingGrid room={room} view={view} />
                     <ViewCropBox room={room} view={view} />
                     <CursorCrosshair cursorScreen={cursorScreen} stageSize={stageSize} />
+                    {draftMode?.kind === "wall" && draftEndPoint && (
+                      <Line
+                        points={[
+                          view.worldToScreen(draftMode.start).x,
+                          view.worldToScreen(draftMode.start).y,
+                          view.worldToScreen(draftEndPoint).x,
+                          view.worldToScreen(draftEndPoint).y,
+                        ]}
+                        stroke="#2d6cdf"
+                        strokeWidth={2}
+                        dash={[10, 8]}
+                        listening={false}
+                      />
+                    )}
                     {room.walls.map((wall) => {
                       const polygon = wallPolygon(wall, room, view);
                       const isSelected = selected?.kind === "wall" && selected.id === wall.id;
@@ -1145,6 +1334,7 @@ export default function App() {
                           key={wall.id}
                           onMouseDown={() => setSelected({ kind: "wall", id: wall.id })}
                           onContextMenu={(event) => {
+                            if (draftMode) return;
                             event.evt.preventDefault();
                             const pointer = event.target.getStage().getPointerPosition();
                             if (!pointer || !view) return;
@@ -1165,7 +1355,9 @@ export default function App() {
                           geometry={geometry}
                           isSelected={selected?.kind === "opening" && selected.id === opening.id}
                           onSelect={() => setSelected({ kind: "opening", id: opening.id })}
+                          onDragStart={(event) => startOpeningDrag(event, opening.id)}
                           onContextMenu={(event) => {
+                            if (draftMode) return;
                             const pointer = event.target.getStage().getPointerPosition();
                             if (!pointer || !view) return;
                             buildElementMenu("opening", opening.id, snapWorldPoint(view.screenToWorld(pointer)) || view.screenToWorld(pointer), pointer);
@@ -1182,6 +1374,7 @@ export default function App() {
                           key={cabinet.id}
                           onMouseDown={() => setSelected({ kind: "cabinet", id: cabinet.id })}
                           onContextMenu={(event) => {
+                            if (draftMode) return;
                             event.evt.preventDefault();
                             const pointer = event.target.getStage().getPointerPosition();
                             if (!pointer || !view) return;
@@ -1193,6 +1386,37 @@ export default function App() {
                         </Group>
                       );
                     })}
+                    {currentWall && (
+                      <>
+                        {["start", "end"].map((endpointKey) => {
+                          const point = view.worldToScreen(currentWall[endpointKey]);
+                          return (
+                            <Circle
+                              key={`${currentWall.id}-${endpointKey}`}
+                              x={point.x}
+                              y={point.y}
+                              radius={8}
+                              fill="#ffffff"
+                              stroke="#2d6cdf"
+                              strokeWidth={2.4}
+                              onMouseDown={(event) => startWallEndpointDrag(event, currentWall.id, endpointKey)}
+                            />
+                          );
+                        })}
+                      </>
+                    )}
+                    {currentOpeningGeometry && (
+                      <Circle
+                        x={currentOpeningGeometry.center.x}
+                        y={currentOpeningGeometry.center.y}
+                        radius={7}
+                        fill="#ffffff"
+                        stroke="#2d6cdf"
+                        strokeWidth={2}
+                        dash={[4, 3]}
+                        onMouseDown={(event) => startOpeningDrag(event, currentOpening.id)}
+                      />
+                    )}
                   </Layer>
                 </Stage>
               ) : (
@@ -1212,7 +1436,7 @@ export default function App() {
               <h2>Inspector</h2>
               <button type="button" className="danger" onClick={deleteSelectedElement} disabled={!selected}>Delete</button>
             </div>
-            {!selected && <p className="empty">Right-click or select a wall, opening, or cabinet to edit it.</p>}
+            {!selected && <p className="empty">Select a wall or opening to drag it directly, or right-click to add/edit elements.</p>}
             {currentWall && (
               <div className="stack">
                 <p className="inspector-title">Wall {currentWall.id}</p>

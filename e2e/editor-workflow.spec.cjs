@@ -23,16 +23,26 @@ test("project setup opens the canvas and uses right-click actions", async ({ pag
 
   await canvas.click({ button: "right", position: { x: 180, y: 180 } });
   await expect(page.locator(".context-menu-title")).toHaveText("Canvas Actions");
-  await expect(page.getByRole("button", { name: "Add Existing Wall" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Sketch Existing Wall" })).toBeVisible();
 
-  await page.getByRole("button", { name: "Add Existing Wall" }).click();
-  await expect(page.getByText("Wall added. Save room geometry to persist.")).toBeVisible();
+  await page.getByRole("button", { name: "Sketch Existing Wall" }).click();
+  await expect(page.getByText("Wall sketch started.")).toBeVisible();
+
+  await canvas.click({ position: { x: 340, y: 180 } });
+  await expect(page.getByText("Wall drafted.")).toBeVisible();
 
   await page.getByRole("button", { name: "Save Room" }).click();
   await expect(page.getByText("Room geometry saved.")).toBeVisible();
 
-  await canvas.click({ button: "right", position: { x: 220, y: 180 } });
-  await expect(page.getByRole("button", { name: /Place / })).toBeVisible();
-  await page.getByRole("button", { name: /Place / }).click();
-  await expect(page.getByText(/placed\./)).toBeVisible();
+  await canvas.click({ button: "right", position: { x: 260, y: 180 } });
+  await expect(page.getByRole("button", { name: "Add Door Here" })).toBeVisible();
+  await page.getByRole("button", { name: "Add Door Here" }).click();
+  await expect(page.getByText("door added. Save room geometry to persist.")).toBeVisible();
+
+  const box = await canvas.boundingBox();
+  await page.mouse.move(box.x + 260, box.y + 180);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 320, box.y + 180, { steps: 10 });
+  await page.mouse.up();
+  await expect(page.getByText("Opening moved. Save room geometry to persist.")).toBeVisible();
 });
