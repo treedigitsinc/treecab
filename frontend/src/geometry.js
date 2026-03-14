@@ -1,4 +1,5 @@
 const PADDING = 64;
+const ENDPOINT_EPSILON = 0.01;
 
 export function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -103,6 +104,38 @@ export function wallUnitVectors(wall, view) {
   };
 }
 
+function pointsMatch(first, second, epsilon = ENDPOINT_EPSILON) {
+  return Math.abs(first.x - second.x) <= epsilon && Math.abs(first.y - second.y) <= epsilon;
+}
+
+function wallDirection(wall) {
+  const length = wallLength(wall);
+  if (!length) return null;
+  return {
+    x: (wall.end.x - wall.start.x) / length,
+    y: (wall.end.y - wall.start.y) / length,
+  };
+}
+
+function wallEndpointExtension(wall, room, endpointKey) {
+  const direction = wallDirection(wall);
+  if (!direction) return 0;
+  const anchor = endpointKey === "start" ? wall.start : wall.end;
+  let extension = 0;
+
+  for (const candidate of room.walls) {
+    if (candidate.id === wall.id) continue;
+    if (!pointsMatch(anchor, candidate.start) && !pointsMatch(anchor, candidate.end)) continue;
+    const candidateDirection = wallDirection(candidate);
+    if (!candidateDirection) continue;
+    const dot = Math.abs(direction.x * candidateDirection.x + direction.y * candidateDirection.y);
+    if (dot > 0.98) continue;
+    extension = Math.max(extension, Math.max(wall.thickness || 4.5, candidate.thickness || 4.5) / 2);
+  }
+
+  return extension;
+}
+
 export function polygonBounds(points) {
   const xs = [];
   const ys = [];
@@ -118,18 +151,28 @@ export function polygonBounds(points) {
   };
 }
 
-export function wallPolygon(wall, view) {
-  const { start, end, normal } = wallUnitVectors(wall, view);
+export function wallPolygon(wall, room, view) {
+  const { start, end, tangent, normal } = wallUnitVectors(wall, view);
   const halfThickness = Math.max((wall.thickness || 4.5) * view.scale, 12) / 2;
+  const startExtension = wallEndpointExtension(wall, room, "start") * view.scale;
+  const endExtension = wallEndpointExtension(wall, room, "end") * view.scale;
+  const extendedStart = {
+    x: start.x - tangent.x * startExtension,
+    y: start.y - tangent.y * startExtension,
+  };
+  const extendedEnd = {
+    x: end.x + tangent.x * endExtension,
+    y: end.y + tangent.y * endExtension,
+  };
   const points = [
-    start.x - normal.x * halfThickness,
-    start.y - normal.y * halfThickness,
-    end.x - normal.x * halfThickness,
-    end.y - normal.y * halfThickness,
-    end.x + normal.x * halfThickness,
-    end.y + normal.y * halfThickness,
-    start.x + normal.x * halfThickness,
-    start.y + normal.y * halfThickness,
+    extendedStart.x - normal.x * halfThickness,
+    extendedStart.y - normal.y * halfThickness,
+    extendedEnd.x - normal.x * halfThickness,
+    extendedEnd.y - normal.y * halfThickness,
+    extendedEnd.x + normal.x * halfThickness,
+    extendedEnd.y + normal.y * halfThickness,
+    extendedStart.x + normal.x * halfThickness,
+    extendedStart.y + normal.y * halfThickness,
   ];
   return {
     points,

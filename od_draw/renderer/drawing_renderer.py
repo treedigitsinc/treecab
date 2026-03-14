@@ -527,17 +527,58 @@ class DrawingRenderer:
             origin_y + ((point.y - min_y) * scale),
         )
 
+    def _points_match(self, first: Point2D, second: Point2D, epsilon: float = 0.01) -> bool:
+        return abs(first.x - second.x) <= epsilon and abs(first.y - second.y) <= epsilon
+
+    def _wall_direction(self, wall) -> tuple[float, float] | None:
+        length = wall.length
+        if length == 0:
+            return None
+        return ((wall.end.x - wall.start.x) / length, (wall.end.y - wall.start.y) / length)
+
+    def _wall_endpoint_extension(self, room: Room, wall, endpoint: str) -> float:
+        direction = self._wall_direction(wall)
+        if direction is None:
+            return 0.0
+
+        anchor = wall.start if endpoint == "start" else wall.end
+        extension = 0.0
+        for candidate in room.walls:
+            if candidate.id == wall.id:
+                continue
+            if not self._points_match(anchor, candidate.start) and not self._points_match(anchor, candidate.end):
+                continue
+            candidate_direction = self._wall_direction(candidate)
+            if candidate_direction is None:
+                continue
+            dot = abs((direction[0] * candidate_direction[0]) + (direction[1] * candidate_direction[1]))
+            if dot > 0.98:
+                continue
+            extension = max(extension, max(wall.thickness, candidate.thickness) / 2)
+        return extension
+
     def _render_plan_wall(self, page: PdfPage, room: Room, wall, viewport: Rect) -> None:
         start = self._map_point(room, wall.start, viewport)
         end = self._map_point(room, wall.end, viewport)
         _, _, scale, _, _ = self._room_transform(room, viewport)
         thickness = max(wall.thickness * scale, 8.0)
+        start_extension = self._wall_endpoint_extension(room, wall, "start") * scale
+        end_extension = self._wall_endpoint_extension(room, wall, "end") * scale
+        dx = end.x - start.x
+        dy = end.y - start.y
+        length = math.hypot(dx, dy) or 1.0
+        tangent_x = dx / length
+        tangent_y = dy / length
+        extended_start = Point2D(start.x - (tangent_x * start_extension), start.y - (tangent_y * start_extension))
+        extended_end = Point2D(end.x + (tangent_x * end_extension), end.y + (tangent_y * end_extension))
         is_horizontal = abs(start.y - end.y) <= abs(start.x - end.x)
 
         if is_horizontal:
-            rect = Rect(min(start.x, end.x), start.y - (thickness / 2), abs(end.x - start.x), thickness)
+            center_y = (extended_start.y + extended_end.y) / 2
+            rect = Rect(min(extended_start.x, extended_end.x), center_y - (thickness / 2), abs(extended_end.x - extended_start.x), thickness)
         else:
-            rect = Rect(start.x - (thickness / 2), min(start.y, end.y), thickness, abs(end.y - start.y))
+            center_x = (extended_start.x + extended_end.x) / 2
+            rect = Rect(center_x - (thickness / 2), min(extended_start.y, extended_end.y), thickness, abs(extended_end.y - extended_start.y))
 
         if wall.status == WallStatus.TO_REMOVE:
             page.rect(rect.x, rect.y, rect.width, rect.height, stroke_width=0.9, stroke_rgb=self.demo, fill_rgb=self.demo)

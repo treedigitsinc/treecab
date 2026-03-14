@@ -903,7 +903,7 @@ export default function App() {
                   <Layer>
                     <Rect x={0} y={0} width={stageSize.width} height={stageSize.height} fill="#fffdf9" />
                     {room.walls.map((wall) => {
-                      const polygon = wallPolygon(wall, view);
+                      const polygon = wallPolygon(wall, room, view);
                       const isSelected = selected?.kind === "wall" && selected.id === wall.id;
                       const stroke = isSelected ? "#b85635" : "#1f1a15";
                       const fill = wall.status === "new" ? "#9da3a7" : "#fffdf9";
